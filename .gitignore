@@ -1,0 +1,35 @@
+# ===== 隐私 / 密钥（绝不入库）=====
+# 本地生成的 bearer key（代理鉴权令牌）
+keys/*.key
+# 运行日志 / pid（可能含本机路径、账号信息）
+logs/*
+!logs/.gitkeep
+
+# 开机自启脚本安装时生成（含本机绝对路径）
+scripts/start-silent.vbs
+
+# ===== 用户本地配置 =====
+opencode.jsonc
+opencode.jsonc.bak*
+*.bak
+*.bak.*
+
+# ===== 本地环境变量 =====
+.env
+.env.*
+!.env.example
+
+# ===== Node =====
+node_modules/
+npm-debug.log*
+pnpm-debug.log*
+yarn-error.log*
+dist/
+build/
+
+# ===== 编辑器 / 系统 =====
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
