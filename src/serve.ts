@@ -20,10 +20,19 @@ import { regionOfCredential, regionOfEdition, type TraeRegion } from './region.t
 import { createTraeShim, type TraeShim, type ShimLogger } from './shim.ts'
 import { TraeSoloBridge } from './solo-bridge.ts'
 import { TraeSoloUpstreamClient } from './solo.ts'
+import { TraeSigninClient } from './signin.ts'
+import { SigninScheduler, formatSec } from './scheduler.ts'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const ROOT = dirname(HERE)
 const KEYS_DIR = join(ROOT, 'keys')
+const STATE_DIR = join(ROOT, 'state')
+
+const SIGNIN_ENABLED = (process.env['TRAE_SIGNIN'] ?? 'on') !== 'off'
+const SIGNIN_START_HOUR = Number(process.env['TRAE_SIGNIN_START_HOUR'] ?? 7)
+const SIGNIN_END_HOUR = Number(process.env['TRAE_SIGNIN_END_HOUR'] ?? 10)
+const SIGNIN_TICK_MS = 5 * 60 * 1000
+const SIGNIN_INITIAL_DELAY_MS = 60 * 1000
 
 const REGION_PORTS: Record<TraeRegion, number> = {
   cn: Number(process.env['TRAE_CN_PORT'] ?? 39303),
@@ -58,6 +67,8 @@ interface RegionRuntime {
   store: LiveTraeStore
   solo: TraeSoloUpstreamClient
   catalog: TraeCatalog
+  signin: TraeSigninClient
+  scheduler: SigninScheduler
 }
 
 async function refreshModels(rt: RegionRuntime): Promise<void> {
@@ -106,7 +117,14 @@ async function buildRegion(region: TraeRegion): Promise<{ shim: TraeShim; rt: Re
 
   const catalog = new TraeCatalog(region)
   const bridge = new TraeSoloBridge(solo, catalog)
-  const rt: RegionRuntime = { region, store, solo, catalog }
+  const signin = new TraeSigninClient(region, store, identity)
+  const scheduler = new SigninScheduler({
+    stateFile: join(STATE_DIR, 'signin-state.json'),
+    startHour: SIGNIN_START_HOUR,
+    endHour: SIGNIN_END_HOUR,
+    log: m => logger.info(m),
+  })
+  const rt: RegionRuntime = { region, store, solo, catalog, signin, scheduler }
 
   const key = await loadOrCreateKey(join(KEYS_DIR, `${region}.key`))
   const shim = createTraeShim({
@@ -117,14 +135,35 @@ async function buildRegion(region: TraeRegion): Promise<{ shim: TraeShim; rt: Re
     client: bridge,
     catalog,
     logger,
+    signinStatus: SIGNIN_ENABLED ? async () => {
+      const entry = await scheduler.entry(region) ?? await scheduler.plan(region)
+      let view: unknown = null
+      let error: string | undefined
+      try { view = await signin.getStatus() }
+      catch (e) { error = e instanceof Error ? e.message : String(e) }
+      return {
+        region,
+        scheduledAt: formatSec(entry.runAtSec),
+        claimedToday: entry.claimed,
+        lastResult: entry.result,
+        view,
+        ...(error === undefined ? {} : { error }),
+      }
+    } : undefined,
+    signinClaim: SIGNIN_ENABLED ? async () => {
+      const outcome = await scheduler.runNow(region, () => signin.claim())
+      return { region, ...outcome }
+    } : undefined,
   })
   return { shim, rt }
 }
 
 async function main(): Promise<void> {
   await mkdir(KEYS_DIR, { recursive: true, mode: 0o700 })
+  if (SIGNIN_ENABLED) await mkdir(STATE_DIR, { recursive: true, mode: 0o700 })
   const runtimes: RegionRuntime[] = []
   const shims: TraeShim[] = []
+  let signinTimer: NodeJS.Timeout | undefined
 
   for (const region of ['cn', 'ai'] as TraeRegion[]) {
     const built = await buildRegion(region)
@@ -132,6 +171,10 @@ async function main(): Promise<void> {
     shims.push(built.shim)
     runtimes.push(built.rt)
     logger.info(`trae(${region}) 已监听 ${built.shim.baseUrl()} (models=${built.rt.catalog.current().length})`)
+    if (SIGNIN_ENABLED) {
+      const plan = await built.rt.scheduler.plan(region)
+      logger.info(`trae(${region}) 今日签到计划 ${formatSec(plan.runAtSec)}`)
+    }
     void refreshModels(built.rt)
   }
 
@@ -139,6 +182,22 @@ async function main(): Promise<void> {
     for (const rt of runtimes) void refreshModels(rt)
   }, 6 * 60 * 60 * 1000)
   timer.unref()
+
+  async function signinTick(): Promise<void> {
+    for (const rt of runtimes) {
+      try {
+        await rt.scheduler.runIfDue(rt.region, () => rt.signin.claim())
+      } catch {
+        // 未登录/token 失效/国际区不支持：静默跳过
+      }
+    }
+  }
+  if (SIGNIN_ENABLED) {
+    setTimeout(() => { void signinTick() }, SIGNIN_INITIAL_DELAY_MS).unref()
+    signinTimer = setInterval(() => { void signinTick() }, SIGNIN_TICK_MS)
+    signinTimer.unref()
+    logger.info(`每日签到已启用：本地 ${SIGNIN_START_HOUR}:00–${SIGNIN_END_HOUR}:00 随机时刻自动领取`)
+  }
 
   logger.info(`trae-proxy 就绪：国内 ${REGION_PORTS.cn} / 国际 ${REGION_PORTS.ai}`)
 
@@ -148,6 +207,7 @@ async function main(): Promise<void> {
     closing = true
     logger.info(`收到 ${signal}，正在关闭...`)
     clearInterval(timer)
+    if (signinTimer !== undefined) clearInterval(signinTimer)
     await Promise.allSettled(shims.map(shim => shim.close()))
     process.exit(0)
   }

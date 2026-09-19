@@ -43,6 +43,10 @@ export interface TraeShimOptions {
   client: TraeUpstreamClient
   catalog: TraeCatalog
   logger?: ShimLogger
+  /** 只读签到状态；不提供则 /signin/* 返回 404 */
+  signinStatus?: () => Promise<unknown>
+  /** 立即检查/领取今日签到（幂等） */
+  signinClaim?: () => Promise<unknown>
 }
 
 const BODY_LIMIT = 64 * 1024 * 1024
@@ -169,6 +173,16 @@ export function createTraeShim(options: TraeShimOptions): TraeShim {
           object: 'list',
           data: options.catalog.current().map(model => ({ id: model.id, object: 'model', created: 0, owned_by: `trae-${region}` })),
         })
+      }
+      if (url.split('?')[0] === '/signin/status' && req.method === 'GET') {
+        if (!options.signinStatus) return writeError(res, 404, 'not_found', 'sign-in not available')
+        try { return writeJson(res, 200, await options.signinStatus()) }
+        catch (error) { return writeError(res, 502, 'signin_error', error instanceof Error ? error.message : String(error)) }
+      }
+      if (url.split('?')[0] === '/signin/claim' && req.method === 'POST') {
+        if (!options.signinClaim) return writeError(res, 404, 'not_found', 'sign-in not available')
+        try { return writeJson(res, 200, await options.signinClaim()) }
+        catch (error) { return writeError(res, 502, 'signin_error', error instanceof Error ? error.message : String(error)) }
       }
       if (req.method === 'POST' && (url === '/v1/chat/completions' || url === '/v1/chat/completions/')) {
         if (typeof req.headers['content-type'] !== 'string'

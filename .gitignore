@@ -33,3 +33,7 @@ build/
 .DS_Store
 Thumbs.db
 desktop.ini
+
+# 每日签到状态（本机生成，含计划时刻，不入库）
+state/
+
