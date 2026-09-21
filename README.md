@@ -11,7 +11,9 @@
 登录态解密、模型目录（SOLO 通道约 39 个）、SSE 流式对话、工具调用（`finish_reason=tool_calls`）均可用。
 
 > **须知**：本项目**参考（改写自）[dingminhua/dsh-connect-trae](https://github.com/dingminhua/dsh-connect-trae)**
-> （MIT，Copyright (c) 2026 LaoDing），去掉了 DeepSeek Harness（DSH）插件外壳，只保留纯 Node 连接内核。
+> （MIT，Copyright (c) 2026 LaoDing）及其独立改写版
+> **[weixiaokuan123/trae-proxy](https://github.com/weixiaokuan123/trae-proxy)**
+> （MIT，Copyright (c) 2026 weixiaokuan123），去掉了 DeepSeek Harness（DSH）插件外壳，只保留纯 Node 连接内核。
 > 它**只读** Trae 桌面端当前登录态，本身不提供账号切换。
 
 ## 它做了什么
@@ -27,7 +29,9 @@ Trae 桌面端把凭据加密存放在本地 `storage.json`，并使用私有的
 
 ## 来源与许可
 
-参考（改写自）[dingminhua/dsh-connect-trae](https://github.com/dingminhua/dsh-connect-trae)（MIT）。
+参考（改写自）[dingminhua/dsh-connect-trae](https://github.com/dingminhua/dsh-connect-trae)（MIT，Copyright (c) 2026 LaoDing）。
+本项目的**直接上游**是它的独立改写版 [weixiaokuan123/trae-proxy](https://github.com/weixiaokuan123/trae-proxy)
+（MIT，Copyright (c) 2026 weixiaokuan123），本仓库在其基础上继续修改而成。
 其协议调研参考了 [Wang-JQ77/dsh-trae-api](https://github.com/Wang-JQ77/dsh-trae-api)（MIT）等项目。
 版权与署名详见 `LICENSE` 与 `THIRD_PARTY_NOTICES.md`，各源码文件头部亦有标注。
 
@@ -56,13 +60,13 @@ Trae 桌面端把凭据加密存放在本地 `storage.json`，并使用私有的
 **Windows（PowerShell）**
 
 ```powershell
-git clone https://github.com/weixiaokuan123/trae-proxy.git "$env:USERPROFILE\.config\opencode\trae-proxy"
+git clone https://github.com/anghunk/trae-proxy.git "$env:USERPROFILE\.config\opencode\trae-proxy"
 ```
 
 **macOS / Linux**
 
 ```bash
-git clone https://github.com/weixiaokuan123/trae-proxy.git ~/.config/opencode/trae-proxy
+git clone https://github.com/anghunk/trae-proxy.git ~/.config/opencode/trae-proxy
 ```
 
 ### 2. 启动并注入配置（手动分步）
@@ -87,13 +91,60 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\status.ps1
 **必须重启 opencode** 才会加载新注入的 provider。重启后在模型列表里选择
 `Trae 国内版` 或 `Trae 国际版` 下的模型（默认推荐 `trae-cn/glm-5.3`）。
 
-macOS / Linux 下直接：
+### 4. macOS / Linux 手动运行
+
+> 本节只记录手动运行指令，不会注册开机自启或系统计划任务。
+> 以下命令均以「当前目录即项目根目录」为前提。
+>
+> `TRAE_SIGNIN=off` 表示关闭 Trae 自动签到。需要自动签到时，去掉该环境变量。
+
+进入项目目录：
 
 ```bash
-node src/serve.ts                 # 前台启动
-node scripts/inject-config.cjs    # 注入 provider
-KEY=$(cat keys/cn.key)            # 状态自检
-curl -H "Authorization: Bearer $KEY" http://127.0.0.1:39303/status
+cd ~/code/trae-proxy
+```
+
+**前台运行**
+
+```bash
+TRAE_SIGNIN=off node src/serve.ts
+```
+
+前台运行时会占用当前终端；按 `Ctrl+C` 停止。
+
+**后台运行**
+
+```bash
+NODE_BIN="$(command -v node)"
+PROJECT_DIR="$(pwd)"
+screen -dmS trae-proxy zsh -lc "exec env TRAE_SIGNIN=off '$NODE_BIN' \
+'$PROJECT_DIR/src/serve.ts' \
+>> '$PROJECT_DIR/logs/proxy.log' \
+2>> '$PROJECT_DIR/logs/proxy.err.log'"
+```
+
+**状态自检**
+
+```bash
+screen -ls
+lsof -nP -iTCP:39303 -sTCP:LISTEN
+lsof -nP -iTCP:39304 -sTCP:LISTEN
+
+KEY=$(tr -d '\n' < keys/cn.key)
+curl -fsS -H "Authorization: Bearer $KEY" http://127.0.0.1:39303/status
+```
+
+**停止后台服务**
+
+```bash
+screen -S trae-proxy -X quit
+pkill -f "$(pwd)/src/serve.ts"
+```
+
+**注入 opencode provider**
+
+```bash
+node scripts/inject-config.cjs
 ```
 
 ## 切换账号

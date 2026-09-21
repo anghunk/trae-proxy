@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto'
 import type { TraeCredential } from './auth.ts'
 import type { TraeIdentity } from './identity.ts'
 import { buildTraeCnHeaders, traeEndpoint } from './protocol.ts'
@@ -19,7 +20,10 @@ export const TRAE_SOLO_FUNCTION = 'solo_work_lite'
  * order below decides which wire name a model is called with.
  */
 export const TRAE_DIRECTORY_FUNCTIONS: Readonly<Record<TraeRegion, readonly string[]>> = {
-  cn: ['solo_work_remote', TRAE_SOLO_FUNCTION],
+  // solo_agent 放在末位：它额外列出 glm-5.1 / glm-5v-turbo / qwen-3.7-plus /
+  // Doubao_1_6（企业网关实测均可用，2026-09-21），但放末位才能让已被前者列出的
+  // 模型继续用原来的 function 调用，不改变既有行为。
+  cn: ['solo_work_remote', TRAE_SOLO_FUNCTION, 'solo_agent'],
   ai: ['solo_agent', 'solo_work_remote', TRAE_SOLO_FUNCTION],
 }
 export const TRAE_SOLO_CHAT_PATH = '/api/agent/v3/llm_utils_chat'
@@ -42,6 +46,11 @@ export function prepareSoloBody(source: string, defaultModel = 'glm-5.2', functi
   const input = JSON.parse(source) as Record<string, unknown>
   const requestedModel = typeof input['model'] === 'string' && input['model'].trim() !== '' ? input['model'].trim() : defaultModel
   const model = requestedModel
+  // llm_utils_chat 把 request_id / session_id 当作必填参数：缺失时上游返回 HTTP 200
+  // 但只回一个 error 事件，且报错极具误导性——公开网关报 4011「requests have exceeded
+  // the rate limit」，企业网关报 4001「the param is invalid」（2026-09-21 实测）。
+  // 官方客户端同样逐请求携带这两个字段，这里按请求生成，不跨请求复用会话。
+  const requestId = randomUUID().replaceAll('-', '')
   // llm_utils_chat is not an OpenAI-compatible endpoint. Build its evidenced
   // envelope explicitly so optional Pi/OpenAI fields (temperature, max_tokens,
   // tool_choice, response_format, etc.) cannot make every model fail validation.
@@ -56,6 +65,8 @@ export function prepareSoloBody(source: string, defaultModel = 'glm-5.2', functi
       ? input['function']
       : (functionName ?? TRAE_SOLO_FUNCTION),
     stream: true,
+    request_id: requestId,
+    session_id: requestId,
     ...Array.isArray(input['tools']) ? { tools: input['tools'] } : {},
     ...typeof input['reasoning_effort'] === 'string' ? { reasoning_effort: input['reasoning_effort'] } : {},
   }
@@ -111,7 +122,11 @@ export interface TraeSoloModel {
 export interface TraeSoloClientOptions {
   credential(): Promise<TraeCredential>
   identity(): Promise<TraeIdentity>
-  baseUrl?: string
+  /**
+   * 上游基址。传函数时按请求实时解析，用于跟随桌面端切换账号（企业版账号的
+   * 对话与目录都在企业网关上，公开网关会拒绝）；返回 undefined 表示回落区域默认网关。
+   */
+  baseUrl?: string | (() => Promise<string | undefined>)
   fetchImpl?: typeof fetch
   log?: (message: string, detail?: unknown) => void
 }
@@ -122,6 +137,15 @@ export class TraeSoloUpstreamClient {
   constructor(options: TraeSoloClientOptions) {
     this.options = options
     this.fetchImpl = options.fetchImpl ?? fetch
+  }
+
+  /** 本次请求应使用的上游基址：动态解析优先，其次固定值，最后回落区域公开网关。 */
+  private async resolveBase(region: TraeRegion): Promise<string> {
+    const configured = this.options.baseUrl
+    if (typeof configured === 'function') {
+      return await configured() ?? REGION_GATEWAYS[region].chat
+    }
+    return configured ?? REGION_GATEWAYS[region].chat
   }
 
   /**
@@ -139,7 +163,7 @@ export class TraeSoloUpstreamClient {
   async fetchModels(signal?: AbortSignal): Promise<TraeSoloModel[]> {
     const [credential, identity] = await Promise.all([this.options.credential(), this.options.identity()])
     const region = regionOfCredential(credential)
-    const base = this.options.baseUrl ?? REGION_GATEWAYS[region].chat
+    const base = await this.resolveBase(region)
     const headers = { ...buildTraeCnHeaders(credential, identity), Accept: 'application/json' }
     const byId = new Map<string, TraeSoloModel>()
     const failures: string[] = []
@@ -221,7 +245,7 @@ export class TraeSoloUpstreamClient {
     catch { return { ok: false, status: 400, kind: 'client', message: 'invalid JSON request' } }
     const [credential, identity] = await Promise.all([this.options.credential(), this.options.identity()])
     const headers = buildTraeCnHeaders(credential, identity)
-    const base = this.options.baseUrl ?? REGION_GATEWAYS[regionOfCredential(credential)].chat
+    const base = await this.resolveBase(regionOfCredential(credential))
     let response: Response
     try {
       response = await this.fetchImpl(traeEndpoint(base, TRAE_SOLO_CHAT_PATH), {

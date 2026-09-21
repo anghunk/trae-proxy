@@ -13,10 +13,11 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { LiveTraeStore } from './auth.ts'
 import { fromSoloModels, TraeCatalog } from './catalog.ts'
+import { resolveEnterpriseGatewayFromStorage } from './enterprise-gateway.ts'
 import { resolveTraeIdentity } from './identity.ts'
 import { traeStorageCandidates } from './paths.ts'
 import { refreshTraeCredential } from './refresh.ts'
-import { regionOfCredential, regionOfEdition, type TraeRegion } from './region.ts'
+import { REGION_GATEWAYS, regionOfCredential, regionOfEdition, type TraeRegion } from './region.ts'
 import { createTraeShim, type TraeShim, type ShimLogger } from './shim.ts'
 import { TraeSoloBridge } from './solo-bridge.ts'
 import { TraeSoloUpstreamClient } from './solo.ts'
@@ -83,6 +84,37 @@ async function refreshModels(rt: RegionRuntime): Promise<void> {
   }
 }
 
+/** 已上报过的上游基址，保证同一区域同一 host 只在首次生效时打印一行日志。 */
+const reportedBases = new Set<string>()
+
+/**
+ * 解析当前登录态实际应使用的上游基址。
+ *
+ * 桌面端把自己真正调用的 API host 写在 storage.json 的 `iCubeHostInfo` 里（企业版
+ * SaaS 账号指向 `console.enterprise.trae.cn`）。这类账号在公开 SOLO 通道上会被上游
+ * 拒绝——HTTP 200 但只回一个 error 事件（公开网关 4011 / 企业网关 4001），所以以桌面端
+ * 自己记录的 host 为准。没有该字段、或它就等于区域公开网关时返回 undefined，
+ * 由上游客户端回落公开网关。
+ */
+async function resolveUpstreamBase(region: TraeRegion, store: LiveTraeStore): Promise<string | undefined> {
+  try {
+    const credential = await store.resolve()
+    const candidate = traeStorageCandidates().find(item =>
+      item.source === 'desktop' && item.edition === credential.edition)
+    if (candidate === undefined) return undefined
+    const gateway = resolveEnterpriseGatewayFromStorage(await readFile(candidate.path, 'utf8'))
+    if (gateway === undefined || gateway.chat === REGION_GATEWAYS[region].chat) return undefined
+    const tag = `${region}|${gateway.chat}`
+    if (!reportedBases.has(tag)) {
+      reportedBases.add(tag)
+      logger.info(`trae(${region}): 使用桌面端记录的 API host ${gateway.chat}`)
+    }
+    return gateway.chat
+  } catch {
+    return undefined
+  }
+}
+
 async function buildRegion(region: TraeRegion): Promise<{ shim: TraeShim; rt: RegionRuntime }> {
   const store = new LiveTraeStore({
     region,
@@ -112,6 +144,8 @@ async function buildRegion(region: TraeRegion): Promise<{ shim: TraeShim; rt: Re
   const solo = new TraeSoloUpstreamClient({
     credential: () => store.resolve(),
     identity,
+    // 按请求实时解析：企业版账号走企业网关，普通账号回落公开网关。
+    baseUrl: () => resolveUpstreamBase(region, store),
     log: (message, detail) => logger.warn(message, detail),
   })
 
