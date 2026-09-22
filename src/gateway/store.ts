@@ -803,6 +803,48 @@ export class GatewayStore {
     }))
   }
 
+  /** 按小时汇总（用量图表；本地时区按 ts 偏移切分，前端按小时显示）。 */
+  usageByHour(options: { from?: number; to?: number } = {}): Array<{
+    hour: string
+    requests: number
+    success: number
+    totalTokens: number
+  }> {
+    this.flushUsage()
+    const conditions: string[] = []
+    const params: (number | string)[] = []
+    if (options.from !== undefined) {
+      conditions.push('ts >= ?')
+      params.push(options.from)
+    }
+    if (options.to !== undefined) {
+      conditions.push('ts <= ?')
+      params.push(options.to)
+    }
+    const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : ''
+    const rows = this.db
+      .prepare(
+        `SELECT strftime('%Y-%m-%d %H:00', ts / 1000, 'unixepoch', 'localtime') AS hour,
+                COUNT(*) AS requests,
+                SUM(CASE WHEN status >= 200 AND status < 400 THEN 1 ELSE 0 END) AS success,
+                COALESCE(SUM(total_tokens), 0) AS total_tokens
+         FROM usage_events ${where}
+         GROUP BY hour ORDER BY hour`,
+      )
+      .all(...params) as {
+      hour: string
+      requests: number
+      success: number | null
+      total_tokens: number
+    }[]
+    return rows.map(row => ({
+      hour: row.hour,
+      requests: row.requests,
+      success: row.success ?? 0,
+      totalTokens: row.total_tokens,
+    }))
+  }
+
   /** 清理指定时间之前的用量事件，返回删除行数。 */
   pruneUsage(before: number): number {
     this.flushUsage()

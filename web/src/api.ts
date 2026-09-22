@@ -63,6 +63,7 @@ export interface UsageResponse {
   summary: UsageSummary
   recent: { rows: UsageRow[]; total: number }
   byDay: Array<{ day: string; requests: number; success: number; totalTokens: number }>
+  byHour: Array<{ hour: string; requests: number; success: number; totalTokens: number }>
   byProvider: Array<{ key: string | null; requests: number; success: number; requestTokens: number; responseTokens: number; totalTokens: number }>
   byKey: Array<{ key: string | null; requests: number; success: number; requestTokens: number; responseTokens: number; totalTokens: number }>
   byModel: Array<{ key: string | null; requests: number; success: number; requestTokens: number; responseTokens: number; totalTokens: number }>

@@ -1965,10 +1965,15 @@ export function createGatewayServer(options: GatewayServerOptions): GatewayServe
       const recentParams = url.searchParams.get('recent') === '1'
       const recentLimit = Math.min(Math.max(Number(url.searchParams.get('recentLimit') ?? 20), 1), 200)
       const recentOffset = Math.max(Number(url.searchParams.get('recentOffset') ?? 0), 0)
+      const hourlyTo = Date.now()
+      const hourlyFrom = new Date(hourlyTo)
+      hourlyFrom.setMinutes(0, 0, 0)
+      hourlyFrom.setHours(hourlyFrom.getHours() - 23)
       writeJson(res, 200, {
         summary: store.usageSummary({ ...range, ...(apiKeyId === undefined ? {} : { apiKeyId }), ...(providerId === undefined ? {} : { providerId }), ...(model === undefined ? {} : { model }) }),
         recent: store.recentUsage({ limit: recentLimit, offset: recentOffset, total: recentParams }),
         byDay: store.usageByDay(range),
+        byHour: store.usageByHour({ from: hourlyFrom.getTime(), to: hourlyTo }),
         byProvider: store.usageBreakdown('provider_id', range),
         byKey: store.usageBreakdown('api_key_id', range),
         byModel: store.usageBreakdown('model', range),

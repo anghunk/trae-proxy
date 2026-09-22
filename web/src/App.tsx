@@ -5,29 +5,41 @@
  * 设计参考 Vercel 的克制单色风格（Geist 字体、表格化布局），但不复制其品牌。
  */
 
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import type { FormEvent } from 'react'
 import { api, type ApiKey, type Dashboard, type Provider } from './api.ts'
 
-type View = 'overview' | 'providers' | 'keys' | 'usage' | 'provider-detail' | 'settings'
+type View = 'overview' | 'providers' | 'keys' | 'usage' | 'provider-detail' | 'settings-password' | 'settings-gateway'
 
 const VIEWS: Array<{ id: View; label: string }> = [
   { id: 'overview', label: '控制台' },
   { id: 'providers', label: '渠道模型' },
   { id: 'keys', label: 'API Keys' },
   { id: 'usage', label: '用量统计' },
-  { id: 'settings', label: '系统设置' },
+  { id: 'settings-password', label: '系统设置' },
+]
+
+const SETTING_VIEWS: Array<{ id: View; path: string; label: string }> = [
+  { id: 'settings-password', path: 'password', label: '修改密码' },
+  { id: 'settings-gateway', path: 'gateway', label: '网关信息' },
 ]
 
 function viewFromPath(): View {
   if (/^\/providers\/[^/]+\/?$/.test(window.location.pathname)) return 'provider-detail'
-  const match = /^\/(overview|providers|keys|usage|settings)\/?$/.exec(window.location.pathname)
+  const settingsMatch = /^\/settings\/(password|gateway)\/?$/.exec(window.location.pathname)
+  if (settingsMatch !== null) return `settings-${settingsMatch[1]}` as View
+  const match = /^\/(overview|providers|keys|usage)\/?$/.exec(window.location.pathname)
   return match === null ? 'overview' : match[1] as View
 }
 
 function navigate(view: View, id?: string): void {
-  window.history.pushState(null, '', view === 'provider-detail' && id !== undefined ? `/providers/${encodeURIComponent(id)}` : `/${view}`)
+  const path = view === 'provider-detail' && id !== undefined
+    ? `/providers/${encodeURIComponent(id)}`
+    : view === 'settings-password' ? '/settings/password'
+    : view === 'settings-gateway' ? '/settings/gateway'
+    : `/${view}`
+  window.history.pushState(null, '', path)
 }
 
 const TYPE_LABEL: Record<Provider['type'], string> = {
@@ -110,6 +122,44 @@ function formatDate(value: number | string): string {
   }).format(date)
 }
 
+interface UsageBarItem {
+  id: string
+  label: string
+  detail: string
+  requests: number
+  success: number
+  totalTokens: number
+}
+
+/** 用量柱状图：悬停时展示请求、成功率和 Token 明细。 */
+function UsageBarChart({ items }: { items: UsageBarItem[] }) {
+  const max = Math.max(...items.map(item => item.totalTokens), 1)
+  return (
+    <div className="bar-chart">
+      {items.map(item => {
+        const successRate = item.requests === 0 ? '-' : `${((item.success / item.requests) * 100).toFixed(1)}%`
+        return (
+          <div className="bar-col" key={item.id}>
+            <div className="bar-tooltip" role="tooltip">
+              <span className="bar-tooltip-title">{item.detail}</span>
+              <span className="bar-tooltip-row"><span>请求</span><strong>{formatNumber(item.requests)}</strong></span>
+              <span className="bar-tooltip-row"><span>成功率</span><strong>{successRate}</strong></span>
+              <span className="bar-tooltip-row"><span>Token</span><strong>{formatToken(item.totalTokens)}</strong></span>
+            </div>
+            <div className="bar-track">
+              <div
+                className="bar-fill"
+                style={{ height: `${Math.max(4, (item.totalTokens / max) * 100)}%` }}
+              />
+            </div>
+            <span className="bar-label">{item.label}</span>
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
 function Field({
   label,
   hint,
@@ -121,8 +171,10 @@ function Field({
 }) {
   return (
     <label className="field">
-      <span className="field-label">{label}</span>
-      {hint !== undefined && <span className="field-hint">{hint}</span>}
+      <span className="field-head">
+        <span className="field-label">{label}</span>
+        {hint !== undefined && <span className="field-hint" title={hint}>{hint}</span>}
+      </span>
       {children}
     </label>
   )
@@ -544,10 +596,12 @@ function ChannelsView({ onOpenDetail }: { onOpenDetail: (id: string) => void }) 
 
 function ChannelForm({
   initial,
+  catalog,
   onCancel,
   onSaved,
 }: {
   initial?: Provider
+  catalog?: string[]
   onCancel: () => void
   onSaved: () => void
 }) {
@@ -568,19 +622,25 @@ function ChannelForm({
   const [presetId, setPresetId] = useState<string | undefined>(undefined)
 
   const needsKey = TYPE_DEFAULT[type].needsKey
-  const models = discovered.length > 0 ? discovered : template.models
+  const models = discovered.length > 0
+    ? discovered
+    : catalog !== undefined ? catalog : template.models
 
   const isEdit = initial !== undefined
 
   useEffect(() => {
     if (initial === undefined) return
     setSelected(initial.models)
-    if (initial.models.length === 0) {
+    if (initial.models.length === 0 && catalog === undefined) {
       api.refreshProvider(initial.id)
         .then(result => setDiscovered(result.models))
         .catch(() => setDiscovered([]))
     }
   }, [initial])
+
+  useEffect(() => {
+    if (catalog !== undefined && catalog.length > 0) setDiscovered(catalog)
+  }, [catalog])
 
   const changeType = (next: Provider['type']): void => {
     setType(next)
@@ -818,8 +878,10 @@ function ChannelDetail({ id, onBack, onDeleted }: {
   const [refreshedModels, setRefreshedModels] = useState<string[]>([])
   const [actionError, setActionError] = useState<string | undefined>(undefined)
   const [testing, setTesting] = useState(false)
+  const [refreshing, setRefreshing] = useState(false)
   const [testResult, setTestResult] = useState<string | undefined>(undefined)
   const [toggling, setToggling] = useState(false)
+  const autoRefreshed = useRef<string | undefined>(undefined)
 
   const setEnabled = async (enabled: boolean): Promise<void> => {
     if (provider === undefined) return
@@ -839,14 +901,25 @@ function ChannelDetail({ id, onBack, onDeleted }: {
   const refresh = async (): Promise<void> => {
     setActionError(undefined)
     setTestResult(undefined)
+    setRefreshing(true)
     try {
       const result = await api.refreshProvider(id)
       setRefreshedModels(result.models)
       reload()
     } catch (reason) {
       setActionError(reason instanceof Error ? reason.message : String(reason))
+    } finally {
+      setRefreshing(false)
     }
   }
+
+  // 进入渠道详情后自动拉取一次完整模型目录，已手动刷新过的渠道不重复请求。
+  useEffect(() => {
+    if (provider === undefined) return
+    if (autoRefreshed.current === provider.id) return
+    autoRefreshed.current = provider.id
+    void refresh()
+  }, [provider])
 
   const test = async (): Promise<void> => {
     setActionError(undefined)
@@ -902,8 +975,8 @@ function ChannelDetail({ id, onBack, onDeleted }: {
               <button className="secondary compact" onClick={() => { void test() }} disabled={testing}>
                 {testing ? '检测中...' : '检测连通性'}
               </button>
-              <button className="secondary compact" onClick={() => { void refresh() }}>
-                刷新模型
+              <button className="secondary compact" onClick={() => { void refresh() }} disabled={refreshing}>
+                {refreshing ? '获取中...' : '刷新模型'}
               </button>
             </>
           )}
@@ -917,11 +990,19 @@ function ChannelDetail({ id, onBack, onDeleted }: {
       {error !== undefined && <div className="alert error">{error}</div>}
       {!loading && provider !== undefined && (
         <>
+          <ChannelForm
+            initial={provider}
+            catalog={refreshedModels}
+            onCancel={() => { navigate('providers'); onBack() }}
+            onSaved={() => { void refresh(); reload() }}
+          />
           <div className="panel">
             <div className="panel-head">
               <h2>已开启模型</h2>
             </div>
-            {previewModels.length === 0 ? (
+            {refreshing && previewModels.length === 0 ? (
+              <Spinner label="正在获取全部模型" />
+            ) : previewModels.length === 0 ? (
               <div className="empty">
                 {refreshedModels.length > 0 ? '模型目录已拉取，当前映射全部模型' : '点击「刷新模型」拉取可用目录，当前映射全部模型'}
               </div>
@@ -936,11 +1017,6 @@ function ChannelDetail({ id, onBack, onDeleted }: {
               </div>
             )}
           </div>
-          <ChannelForm
-            initial={provider}
-            onCancel={() => { navigate('providers'); onBack() }}
-            onSaved={() => { void refresh(); reload() }}
-          />
         </>
       )}
     </section>
@@ -1050,7 +1126,7 @@ function KeyEditorModal({
           <button type="button" className="text-button" onClick={onClose}>关闭</button>
         </div>
         <div className="modal-body">
-          <div className="form-grid">
+          <div className="form-grid single-column">
             <Field label="名称">
               <input value={draft.name} onChange={event => setDraft(current => ({ ...current, name: event.target.value }))} placeholder="如 opencode" />
             </Field>
@@ -1424,23 +1500,36 @@ function UsageView() {
             {data.byDay.length === 0 ? (
               <div className="empty">暂无数据</div>
             ) : (
-              <div className="bar-chart">
-                {data.byDay.map(item => {
-                  const max = Math.max(...data.byDay.map(day => day.totalTokens), 1)
-                  return (
-                    <div className="bar-col" key={item.day}>
-                      <div className="bar-track">
-                        <div
-                          className="bar-fill"
-                          style={{ height: `${Math.max(4, (item.totalTokens / max) * 100)}%` }}
-                          title={`${item.day}: ${formatToken(item.totalTokens)} tokens`}
-                        />
-                      </div>
-                      <span className="bar-label">{item.day.slice(5)}</span>
-                    </div>
-                  )
-                })}
-              </div>
+              <UsageBarChart
+                items={data.byDay.map(item => ({
+                  id: item.day,
+                  label: item.day.slice(5),
+                  detail: item.day,
+                  requests: item.requests,
+                  success: item.success,
+                  totalTokens: item.totalTokens,
+                }))}
+              />
+            )}
+          </div>
+          <div className="panel">
+            <div className="panel-head">
+              <h2>按小时</h2>
+              <span className="panel-note">最近 24 小时</span>
+            </div>
+            {data.byHour.length === 0 ? (
+              <div className="empty">暂无数据</div>
+            ) : (
+              <UsageBarChart
+                items={data.byHour.map(item => ({
+                  id: item.hour,
+                  label: item.hour.slice(11),
+                  detail: item.hour,
+                  requests: item.requests,
+                  success: item.success,
+                  totalTokens: item.totalTokens,
+                }))}
+              />
             )}
           </div>
           <div className="panel">
@@ -1541,8 +1630,8 @@ function UsageView() {
   )
 }
 
-function SettingsView() {
-  const { data, error, loading, reload } = useAsync(() => api.settings(), [])
+function PasswordSettingsView() {
+  const { data } = useAsync(() => api.settings(), [])
   const [username, setUsername] = useState('')
   const [currentPassword, setCurrentPassword] = useState('')
   const [newPassword, setNewPassword] = useState('')
@@ -1589,7 +1678,7 @@ function SettingsView() {
           <h2>管理员</h2>
         </div>
         <form className="provider-form settings-form" onSubmit={event => { void submit(event) }}>
-          <div className="form-grid">
+          <div className="form-grid single-column">
             <Field label="用户名">
               <input value={username} onChange={event => setUsername(event.target.value)} autoComplete="username" />
             </Field>
@@ -1627,7 +1716,14 @@ function SettingsView() {
           </div>
         </form>
       </div>
+    </section>
+  )
+}
 
+function GatewaySettingsView() {
+  const { data, error, loading, reload } = useAsync(() => api.settings(), [])
+  return (
+    <section>
       <div className="panel">
         <div className="panel-head">
           <h2>网关信息</h2>
@@ -1661,6 +1757,7 @@ function Sidebar({ view, onView, onLogout }: {
   onView: (view: View) => void
   onLogout: () => void
 }) {
+  const settingsActive = view === 'settings-password' || view === 'settings-gateway'
   return (
     <aside className="sidebar">
       <div className="sidebar-brand">
@@ -1674,7 +1771,7 @@ function Sidebar({ view, onView, onLogout }: {
         {VIEWS.map(item => (
           <button
             key={item.id}
-            className={view === item.id ? 'active' : ''}
+            className={item.id === 'settings-password' && settingsActive ? 'active' : view === item.id ? 'active' : ''}
             onClick={() => {
               navigate(item.id)
               onView(item.id)
@@ -1689,6 +1786,34 @@ function Sidebar({ view, onView, onLogout }: {
         <span>{window.location.port || '39310'}</span>
         <button className="link-button" onClick={onLogout}>退出登录</button>
       </div>
+    </aside>
+  )
+}
+
+/**
+ * 三栏布局中的中间二级导航。
+ *
+ * 需要带二级菜单的页面传入 items 与当前激活项即可复用，
+ * 展示在左侧主导航与右侧内容之间。
+ */
+function SecondaryNav({ items, activeId, onSelect }: {
+  items: Array<{ id: string; label: string }>
+  activeId: string
+  onSelect: (id: string) => void
+}) {
+  return (
+    <aside className="secondary-nav">
+      <nav>
+        {items.map(item => (
+          <button
+            key={item.id}
+            className={activeId === item.id ? 'active' : ''}
+            onClick={() => onSelect(item.id)}
+          >
+            {item.label}
+          </button>
+        ))}
+      </nav>
     </aside>
   )
 }
@@ -1723,13 +1848,28 @@ function Shell() {
     : view === 'providers' ? '渠道'
     : view === 'keys' ? 'API Keys'
     : view === 'usage' ? '用量'
-    : view === 'settings' ? '设置'
+    : view === 'settings-password' ? '设置'
+    : view === 'settings-gateway' ? '设置'
     : '渠道详情'
   const endpointUrl = `http://127.0.0.1:${window.location.port || '39310'}/v1`
+  const settingsActive = view === 'settings-password' || view === 'settings-gateway'
 
   return (
-    <div className="shell">
+    <div className={`shell${settingsActive ? ' has-secondary' : ''}`}>
       <Sidebar view={view} onView={setView} onLogout={() => { void logout() }} />
+      {settingsActive && (
+        <SecondaryNav
+          items={SETTING_VIEWS}
+          activeId={view}
+          onSelect={id => {
+            const item = SETTING_VIEWS.find(entry => entry.id === id)
+            if (item !== undefined) {
+              navigate(item.id, item.path)
+              setView(item.id)
+            }
+          }}
+        />
+      )}
       <main className="content">
         <header className="topbar">
           <h1>{topbarTitle}</h1>
@@ -1751,7 +1891,8 @@ function Shell() {
         )}
         {view === 'keys' && <KeysView />}
         {view === 'usage' && <UsageView />}
-        {view === 'settings' && <SettingsView />}
+        {view === 'settings-password' && <PasswordSettingsView />}
+        {view === 'settings-gateway' && <GatewaySettingsView />}
       </main>
     </div>
   )

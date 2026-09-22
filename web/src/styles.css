@@ -250,10 +250,15 @@ select:focus {
   grid-template-columns: 220px 1fr;
 }
 
+.shell.has-secondary {
+  grid-template-columns: 220px 180px 1fr;
+}
+
 .sidebar {
   display: flex;
   flex-direction: column;
   min-height: 0;
+  min-width: 0;
   padding: 18px 14px;
   border-right: 1px solid var(--border);
   background: var(--bg-subtle);
@@ -301,6 +306,46 @@ select:focus {
   background: var(--bg);
   color: var(--text);
   box-shadow: var(--shadow);
+  font-weight: 500;
+}
+
+.secondary-nav {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+  padding: 22px 12px;
+  border-right: 1px solid var(--border);
+  background: var(--bg);
+  overflow-y: auto;
+}
+
+.secondary-nav nav {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.secondary-nav button {
+  width: 100%;
+  height: 34px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  color: var(--text-secondary);
+  font-size: 13px;
+  text-align: left;
+}
+
+.secondary-nav button:hover {
+  background: var(--bg-subtle);
+  color: var(--text);
+}
+
+.secondary-nav button.active {
+  background: var(--bg-subtle);
+  color: var(--text);
   font-weight: 500;
 }
 
@@ -476,6 +521,11 @@ select:focus {
   font-size: 15px;
   font-weight: 600;
   letter-spacing: 0;
+}
+
+.panel-note {
+  color: var(--text-tertiary);
+  font-size: 12px;
 }
 
 .table-wrap {
@@ -671,10 +721,21 @@ tbody tr:hover {
   gap: 16px 18px;
 }
 
+.form-grid.single-column {
+  grid-template-columns: minmax(0, 1fr);
+}
+
 .field {
   display: flex;
   flex-direction: column;
+  gap: 6px;
+}
+
+.field-head {
+  display: flex;
+  flex-direction: column;
   gap: 5px;
+  min-width: 0;
 }
 
 .field-label {
@@ -687,9 +748,21 @@ tbody tr:hover {
   font-size: 12px;
 }
 
+/* 渠道表单：统一标题区高度，避免有提示和无提示的字段错位。 */
+.channel-main .field-head {
+  min-height: 44px;
+}
+
+.channel-main .field-hint {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .form-actions {
   display: flex;
   gap: 10px;
+  margin-top: 10px;
 }
 
 .channel-grid {
@@ -910,6 +983,7 @@ tbody tr:hover {
 }
 
 .bar-col {
+  position: relative;
   display: flex;
   flex: 1 0 36px;
   flex-direction: column;
@@ -917,6 +991,72 @@ tbody tr:hover {
   gap: 8px;
   height: 100%;
   min-width: 36px;
+}
+
+.bar-tooltip {
+  position: absolute;
+  top: 0;
+  left: 50%;
+  z-index: 2;
+  display: grid;
+  gap: 5px;
+  min-width: 164px;
+  padding: 10px 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  background: var(--bg);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
+  opacity: 0;
+  visibility: hidden;
+  transform: translate(-50%, -6px);
+  transition: opacity 0.12s ease, transform 0.12s ease, visibility 0.12s;
+  pointer-events: none;
+}
+
+.bar-col:hover .bar-tooltip {
+  opacity: 1;
+  visibility: visible;
+  transform: translate(-50%, 0);
+}
+
+.bar-col:first-child .bar-tooltip,
+.bar-col:last-child .bar-tooltip {
+  transform: translate(0, -6px);
+}
+
+.bar-col:first-child .bar-tooltip {
+  left: 0;
+}
+
+.bar-col:last-child .bar-tooltip {
+  right: 0;
+  left: auto;
+}
+
+.bar-col:first-child:hover .bar-tooltip,
+.bar-col:last-child:hover .bar-tooltip {
+  transform: translate(0, 0);
+}
+
+.bar-tooltip-title {
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.bar-tooltip-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 20px;
+  color: var(--text-secondary);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.bar-tooltip-row strong {
+  color: var(--text);
+  font-weight: 500;
 }
 
 .bar-track {
@@ -1180,6 +1320,10 @@ tbody tr:hover {
     grid-template-columns: 1fr;
   }
 
+  .shell.has-secondary {
+    grid-template-columns: 1fr;
+  }
+
   .sidebar {
     border-right: 0;
     border-bottom: 1px solid var(--border);
@@ -1207,6 +1351,24 @@ tbody tr:hover {
   .content {
     overflow-y: auto;
     padding: 20px 16px 40px;
+  }
+
+  .secondary-nav {
+    padding: 8px 12px;
+    border-right: 0;
+    border-bottom: 1px solid var(--border);
+    overflow-x: auto;
+    overflow-y: hidden;
+  }
+
+  .secondary-nav nav {
+    flex-direction: row;
+  }
+
+  .secondary-nav button {
+    flex: none;
+    width: auto;
+    white-space: nowrap;
   }
 
   .stat-grid {
