@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="web/public/logo.png" alt="trae-proxy" width="128" />
+</p>
+
 # trae-proxy
 
 把 Trae / TRAE SOLO CN 桌面端已登录的模型统一转发为标准 OpenAI 兼容 API，同时支持接入 OpenAI 兼容 / Anthropic / Gemini / Ollama 等上游，统一从 `http://127.0.0.1:39310/v1` 对外提供服务，并内置 React 配置台。

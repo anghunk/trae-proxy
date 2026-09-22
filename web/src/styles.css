@@ -149,20 +149,8 @@ select:focus {
 .brand-mark {
   width: 30px;
   height: 30px;
-  border-radius: 7px;
-  background:
-    linear-gradient(135deg, #111111 0%, #333333 100%);
-  position: relative;
+  object-fit: cover;
   flex: none;
-}
-
-.brand-mark::after {
-  content: '';
-  position: absolute;
-  inset: 7px;
-  border-radius: 3px;
-  background: #ffffff;
-  opacity: 0.92;
 }
 
 .auth-shell {

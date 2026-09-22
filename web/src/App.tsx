@@ -251,7 +251,7 @@ function AuthScreen({ onDone }: { onDone: () => void }) {
   return (
     <div className="auth-shell">
       <form className="auth-card" onSubmit={event => { void submit(event) }}>
-        <div className="brand-mark" aria-hidden="true" />
+        <img className="brand-mark" src="/logo.png" alt="Trae Proxy" />
         <h1>{mode === 'setup' ? '创建管理员' : '登录管理台'}</h1>
         <p className="auth-sub">
           {mode === 'setup' ? '首次启动需要初始化本地管理员账户。' : '使用管理员账户登录统一网关控制台。'}
@@ -1597,7 +1597,7 @@ function Sidebar({ view, onView, onLogout }: {
   return (
     <aside className="sidebar">
       <div className="sidebar-brand">
-        <div className="brand-mark" aria-hidden="true" />
+        <img className="brand-mark" src="/logo.png" alt="Trae Proxy" />
         <div>
           <div className="brand-name">Trae Proxy</div>
           <div className="brand-sub">统一模型网关</div>
