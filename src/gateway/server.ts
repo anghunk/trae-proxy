@@ -12,7 +12,7 @@
 
 import { createServer, ServerResponse, type IncomingMessage, type Server } from 'node:http'
 import type { Socket } from 'node:net'
-import { createHash } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { readFile, stat } from 'node:fs/promises'
 import { dirname, join, resolve, sep } from 'node:path'
 import { Readable } from 'node:stream'
@@ -29,6 +29,7 @@ import {
 import { isValidProviderId, upsertProviderInstance } from './factory.ts'
 import { ProviderRegistry, type GatewayModel } from './providers.ts'
 import { DEFAULT_DB_PATH, type ProviderRecord, type ProviderType } from './store.ts'
+import { SseDecoder } from '../sse.ts'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 export const ROOT = dirname(dirname(HERE))
@@ -186,6 +187,114 @@ function normalizeUsage(usage: unknown): { requestTokens?: number; responseToken
     ...(prompt === undefined ? {} : { requestTokens: prompt }),
     ...(completion === undefined ? {} : { responseTokens: completion }),
     ...(total === undefined ? {} : { totalTokens: total }),
+  }
+}
+
+interface AggregatedToolCall {
+  id?: string
+  type?: string
+  name: string
+  arguments: string
+}
+
+/**
+ * 把 OpenAI Chat Completions SSE 聚合成非流式响应。
+ *
+ * 部分上游（例如 Trae）只能输出 SSE，即使入站请求是 `stream:false`。
+ * 这里统一聚合文本、推理内容、工具调用和 usage，避免非流式请求被误判为
+ * 非法 JSON。
+ */
+function aggregateChatSse(text: string, fallbackModel: string): Record<string, unknown> | undefined {
+  const decoder = new SseDecoder()
+  const events = decoder.push(text)
+  events.push(...decoder.finish())
+
+  let sawChunk = false
+  let id: string | undefined
+  let model: string | undefined
+  let created: number | undefined
+  let finishReason: string | undefined
+  let content = ''
+  let reasoning = ''
+  let usage: Record<string, unknown> | undefined
+  const toolCalls = new Map<number, AggregatedToolCall>()
+
+  for (const event of events) {
+    const data = event.data.trim()
+    if (data === '' || data === '[DONE]') continue
+    let raw: unknown
+    try {
+      raw = JSON.parse(data)
+    } catch {
+      continue
+    }
+    if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) continue
+    const chunk = raw as Record<string, unknown>
+    if (id === undefined && typeof chunk['id'] === 'string' && chunk['id'] !== '') id = chunk['id']
+    if (model === undefined && typeof chunk['model'] === 'string' && chunk['model'] !== '') model = chunk['model']
+    if (created === undefined && typeof chunk['created'] === 'number') created = chunk['created']
+    const chunkUsage = parseJsonObject(chunk['usage'])
+    if (Object.keys(chunkUsage).length > 0) usage = chunkUsage
+
+    const choices = Array.isArray(chunk['choices']) ? chunk['choices'] : []
+    for (const rawChoice of choices) {
+      if (typeof rawChoice !== 'object' || rawChoice === null) continue
+      const choice = rawChoice as Record<string, unknown>
+      const delta = parseJsonObject(choice['delta'])
+      const message = parseJsonObject(choice['message'])
+      const payload = Object.keys(delta).length > 0 ? delta : message
+      if (typeof choice['finish_reason'] === 'string') finishReason = choice['finish_reason']
+      if (typeof payload['content'] === 'string') content += payload['content']
+      if (typeof payload['reasoning_content'] === 'string') reasoning += payload['reasoning_content']
+      const rawToolCalls = Array.isArray(payload['tool_calls']) ? payload['tool_calls'] : []
+      for (const [position, rawCall] of rawToolCalls.entries()) {
+        if (typeof rawCall !== 'object' || rawCall === null) continue
+        const call = rawCall as Record<string, unknown>
+        const rawIndex = call['index']
+        const index = typeof rawIndex === 'number' && Number.isInteger(rawIndex) && rawIndex >= 0 ? rawIndex : position
+        let target = toolCalls.get(index)
+        if (target === undefined) {
+          target = { name: '', arguments: '' }
+          toolCalls.set(index, target)
+        }
+        if (typeof call['id'] === 'string' && call['id'] !== '') target.id = call['id']
+        if (typeof call['type'] === 'string' && call['type'] !== '') target.type = call['type']
+        const fn = parseJsonObject(call['function'])
+        if (typeof fn['name'] === 'string' && fn['name'] !== '') target.name = fn['name']
+        if (typeof fn['arguments'] === 'string') target.arguments += fn['arguments']
+        else if (fn['arguments'] !== undefined && target.arguments === '') target.arguments = JSON.stringify(fn['arguments'])
+      }
+      sawChunk = true
+    }
+  }
+
+  if (!sawChunk) return undefined
+  const message: Record<string, unknown> = {
+    role: 'assistant',
+    content: content === '' ? null : content,
+  }
+  if (reasoning !== '') message['reasoning_content'] = reasoning
+  if (toolCalls.size > 0) {
+    message['tool_calls'] = [...toolCalls.entries()]
+      .sort(([left], [right]) => left - right)
+      .map(([, call]) => ({
+        ...(call.id === undefined ? {} : { id: call.id }),
+        type: call.type ?? 'function',
+        function: { name: call.name, arguments: call.arguments },
+      }))
+  }
+  return {
+    id: id ?? `chatcmpl-${randomUUID().replaceAll('-', '').slice(0, 24)}`,
+    object: 'chat.completion',
+    created: created ?? Math.floor(Date.now() / 1000),
+    model: model ?? fallbackModel,
+    choices: [{
+      index: 0,
+      message,
+      finish_reason: finishReason ?? (toolCalls.size > 0 ? 'tool_calls' : 'stop'),
+      logprobs: null,
+    }],
+    ...(usage === undefined ? {} : { usage }),
   }
 }
 
@@ -676,21 +785,29 @@ export function createGatewayServer(options: GatewayServerOptions): GatewayServe
     }
 
     if (!input.stream) {
-      const text = await result.response.text()
-      let usage: { requestTokens?: number; responseTokens?: number; totalTokens?: number } | undefined
+      let text: string
       try {
-        usage = normalizeUsage((JSON.parse(text) as Record<string, unknown>)['usage'])
-      } catch {
-        usage = undefined
+        text = await result.response.text()
+      } catch (error: unknown) {
+        const message = error instanceof Error ? error.message : String(error)
+        logger.error('upstream response read error', message)
+        recordUsage(502)
+        onError(502, 'upstream response read failed', 'server')
+        return
       }
       let json: Record<string, unknown>
       try {
         json = JSON.parse(text) as Record<string, unknown>
       } catch {
-        recordUsage(502)
-        onError(502, 'upstream returned an invalid JSON response', 'server')
-        return
+        const aggregated = aggregateChatSse(text, input.model)
+        if (aggregated === undefined) {
+          recordUsage(502)
+          onError(502, 'upstream returned an invalid JSON response', 'server')
+          return
+        }
+        json = aggregated
       }
+      const usage = normalizeUsage(json['usage'])
       recordUsage(200, usage)
       onJson(json, result.response.status)
       onDone()
@@ -707,7 +824,6 @@ export function createGatewayServer(options: GatewayServerOptions): GatewayServe
     const decoder = new TextDecoder()
     const usageDecoder = new TextDecoder()
     let usageBuffer = ''
-    let lineBuffer = ''
     const observeUsage = (chunk: Uint8Array): void => {
       usageBuffer += usageDecoder.decode(chunk, { stream: true })
       const lines = usageBuffer.split('\n')
@@ -725,19 +841,15 @@ export function createGatewayServer(options: GatewayServerOptions): GatewayServe
         }
       }
     }
-    const textLines = new TransformStream<Uint8Array, string>({
+    // 只做用量扫描，保持字节流原样：改写成字符串流会让零长度分片
+    // 在 Web Stream → Node Readable 转换时被丢弃，SSE 的空行分隔符随之消失。
+    const usageTap = new TransformStream<Uint8Array, Uint8Array>({
       transform(chunk, controllerInner) {
         observeUsage(chunk)
-        const text = decoder.decode(chunk, { stream: true })
-        const split = (lineBuffer + text).split('\n')
-        lineBuffer = split.pop() ?? ''
-        for (const line of split) controllerInner.enqueue(line)
-      },
-      flush(controllerInner) {
-        if (lineBuffer !== '') controllerInner.enqueue(lineBuffer)
+        controllerInner.enqueue(chunk)
       },
     })
-    const readable = Readable.fromWeb(source.pipeThrough(textLines) as Parameters<typeof Readable.fromWeb>[0])
+    const readable = Readable.fromWeb(source.pipeThrough(usageTap) as Parameters<typeof Readable.fromWeb>[0])
     let finished = false
     let streamFailed = false
     const done = (status: number): void => {
@@ -748,14 +860,25 @@ export function createGatewayServer(options: GatewayServerOptions): GatewayServe
       recordUsage(status, capturedUsage)
       if (!streamFailed) onDone()
     }
+
+    /**
+     * 逐行回放上游 SSE，空行必须原样透传。
+     *
+     * 空行（`\n\n`）是 SSE 的事件终止符：丢掉它会让整条流转变成一个事件，
+     * 严格的解析方（cc-switch 的 chat→responses 转换、Codex）读不到任何 chunk，
+     * 最终报 stream_truncated / ended before sending finish_reason。
+     * 下游消费者各自按需忽略空行即可（Responses 转换已做空行判断）。
+     */
     const lineFeed = async (): Promise<void> => {
-      const lines = Readable.from(readable, { objectMode: true })
-      for await (const chunk of lines) {
-        const text = typeof chunk === 'string' ? chunk : decoder.decode(chunk, { stream: false })
-        for (const line of text.split('\n')) {
-          if (line !== '') onStreamLine(line)
-        }
+      let lineBuffer = ''
+      for await (const chunk of readable) {
+        const text = decoder.decode(chunk as Uint8Array, { stream: true })
+        const split = (lineBuffer + text).split('\n')
+        lineBuffer = split.pop() ?? ''
+        for (const line of split) onStreamLine(line)
       }
+      lineBuffer += decoder.decode()
+      if (lineBuffer !== '') onStreamLine(lineBuffer)
     }
     lineFeed().catch((error: unknown) => {
       if (finished) return
@@ -831,16 +954,16 @@ export function createGatewayServer(options: GatewayServerOptions): GatewayServe
         if (typeof content === 'string' && content.trim() !== '') {
           messages.push({ role: item['role'] === 'user' ? 'user' : 'assistant', content })
         } else if (Array.isArray(content)) {
-          const convertedContent: Array<Record<string, unknown> | string> = []
+          const convertedContent: Array<Record<string, unknown>> = []
           for (const part of content) {
             if (typeof part === 'string' && part !== '') {
-              convertedContent.push(part)
+              convertedContent.push({ type: 'text', text: part })
               continue
             }
             if (typeof part !== 'object' || part === null) continue
             const record = part as Record<string, unknown>
             if ((record['type'] === 'input_text' || record['type'] === 'output_text') && typeof record['text'] === 'string' && record['text'] !== '') {
-              convertedContent.push(record['text'])
+              convertedContent.push({ type: 'text', text: record['text'] })
               continue
             }
             if (record['type'] === 'input_image' && typeof record['image_url'] === 'string' && record['image_url'] !== '') {
@@ -885,21 +1008,36 @@ export function createGatewayServer(options: GatewayServerOptions): GatewayServe
     if (Array.isArray(input['tools'])) {
       const tools: Array<{ type: 'function'; function: { name: string; description: string; parameters: unknown } }> = []
       for (const tool of input['tools']) {
-          if (typeof tool !== 'object' || tool === null) continue
-          const record = tool as Record<string, unknown>
-          const fn = record['function']
-          if (typeof fn !== 'object' || fn === null) continue
-          const fnRecord = fn as Record<string, unknown>
-          tools.push({
-            type: 'function',
-            function: {
-              name: typeof fnRecord['name'] === 'string' ? fnRecord['name'] : '',
-              description: typeof fnRecord['description'] === 'string' ? fnRecord['description'] : '',
-              parameters: fnRecord['parameters'] ?? { type: 'object', properties: {} },
-            },
-          })
+        if (typeof tool !== 'object' || tool === null) continue
+        const record = tool as Record<string, unknown>
+        if (record['type'] !== 'function') continue
+        const nested = record['function']
+        const fn = typeof nested === 'object' && nested !== null
+          ? nested as Record<string, unknown>
+          : record
+        const name = typeof fn['name'] === 'string' ? fn['name'] : ''
+        if (name === '') continue
+        tools.push({
+          type: 'function',
+          function: {
+            name,
+            description: typeof fn['description'] === 'string' ? fn['description'] : '',
+            parameters: fn['parameters'] ?? { type: 'object', properties: {} },
+          },
+        })
       }
       if (tools.length > 0) converted['tools'] = tools
+    }
+    if (typeof input['tool_choice'] === 'string') {
+      converted['tool_choice'] = input['tool_choice']
+    } else if (typeof input['tool_choice'] === 'object' && input['tool_choice'] !== null) {
+      const choice = input['tool_choice'] as Record<string, unknown>
+      if (typeof choice['name'] === 'string' && choice['name'] !== '') {
+        converted['tool_choice'] = { type: 'function', function: { name: choice['name'] } }
+      }
+    }
+    if (typeof input['parallel_tool_calls'] === 'boolean') {
+      converted['parallel_tool_calls'] = input['parallel_tool_calls']
     }
     return converted
   }
@@ -917,25 +1055,32 @@ export function createGatewayServer(options: GatewayServerOptions): GatewayServe
     const choices = Array.isArray(json['choices']) ? json['choices'] : []
     const choice = choices[0] as Record<string, unknown> | undefined
     const message = choice?.['message'] as Record<string, unknown> | undefined
-    const finish = choice?.['finish_reason'] === 'tool_calls' ? 'function_call' : choice?.['finish_reason'] ?? 'stop'
     const output: Array<Record<string, unknown>> = []
     const text = typeof message?.['content'] === 'string' ? message['content'] : ''
-    if (text !== '') output.push({ type: 'output_text', text, annotations: [] })
+    if (text !== '') {
+      output.push({
+        id: `msg_${randomUUID().replaceAll('-', '').slice(0, 24)}`,
+        type: 'message',
+        status: 'completed',
+        role: 'assistant',
+        content: [{ type: 'output_text', text, annotations: [] }],
+      })
+    }
     const toolCalls = Array.isArray(message?.['tool_calls']) ? message['tool_calls'] : []
     for (const call of toolCalls) {
       if (typeof call !== 'object' || call === null) continue
       const callRecord = call as Record<string, unknown>
       const fn = callRecord['function'] as Record<string, unknown> | undefined
-      let argumentsValue: unknown = ''
-      if (fn !== undefined && typeof fn['arguments'] === 'string') {
-        try { argumentsValue = JSON.parse(fn['arguments']) } catch { argumentsValue = fn['arguments'] }
-      }
+      const callId = typeof callRecord['id'] === 'string' && callRecord['id'] !== ''
+        ? callRecord['id']
+        : `call_${randomUUID().replaceAll('-', '').slice(0, 24)}`
       output.push({
+        id: `fc_${randomUUID().replaceAll('-', '').slice(0, 24)}`,
         type: 'function_call',
-        id: callRecord['id'] ?? `call_${Math.random().toString(36).slice(2, 10)}`,
-        call_id: callRecord['id'] ?? '',
+        status: 'completed',
+        call_id: callId,
         name: fn?.['name'] ?? '',
-        arguments: argumentsValue,
+        arguments: typeof fn?.['arguments'] === 'string' ? fn['arguments'] : JSON.stringify(fn?.['arguments'] ?? ''),
       })
     }
     const usage = json['usage'] as Record<string, unknown> | undefined
@@ -958,18 +1103,76 @@ export function createGatewayServer(options: GatewayServerOptions): GatewayServe
               total_tokens: totalTokens ?? (promptTokens ?? 0) + (completionTokens ?? 0),
             },
           }),
-      ...(finish === undefined ? {} : { error: undefined }),
     }
   }
 
-  function responsesSseEvent(id: string, type: string, data: Record<string, unknown>): string {
-    return `event: ${type}\ndata: ${JSON.stringify({ type, ...data, id, sequence_number: 0 })}\n\n`
+  function responsesSseEvent(
+    id: string,
+    type: string,
+    data: Record<string, unknown>,
+    sequenceNumber: number,
+  ): string {
+    return `event: ${type}\ndata: ${JSON.stringify({ type, ...data, id, sequence_number: sequenceNumber })}\n\n`
+  }
+
+  interface ResponseTextState {
+    itemId: string
+    outputIndex: number
+    text: string
+    started: boolean
   }
 
   interface ResponseToolArguments {
-    callId?: string
-    name?: string
+    itemId: string
+    outputIndex: number
+    callId: string
+    name: string
     arguments: string
+    started: boolean
+  }
+
+  interface ResponsesStreamState {
+    model: string
+    nextOutputIndex: number
+    text?: ResponseTextState
+    tools: Map<number, ResponseToolArguments>
+  }
+
+  /** 组装 Responses API 的助手消息输出项。 */
+  function responseMessageItem(state: ResponseTextState): Record<string, unknown> {
+    return {
+      id: state.itemId,
+      type: 'message',
+      status: 'completed',
+      role: 'assistant',
+      content: [{ type: 'output_text', text: state.text, annotations: [] }],
+    }
+  }
+
+  /** 组装 Responses API 的函数调用输出项。 */
+  function responseFunctionCallItem(state: ResponseToolArguments): Record<string, unknown> {
+    return {
+      id: state.itemId,
+      type: 'function_call',
+      status: 'completed',
+      call_id: state.callId,
+      name: state.name,
+      arguments: state.arguments,
+    }
+  }
+
+  /** 汇总当前流中的输出项，用于 response.completed。 */
+  function responsesOutput(state: ResponsesStreamState): Array<Record<string, unknown>> {
+    const output: Array<{ outputIndex: number; item: Record<string, unknown> }> = []
+    if (state.text?.started === true) {
+      output.push({ outputIndex: state.text.outputIndex, item: responseMessageItem(state.text) })
+    }
+    for (const tool of state.tools.values()) {
+      if (tool.started) output.push({ outputIndex: tool.outputIndex, item: responseFunctionCallItem(tool) })
+    }
+    return output
+      .sort((left, right) => left.outputIndex - right.outputIndex)
+      .map(({ item }) => item)
   }
 
   /**
@@ -980,18 +1183,57 @@ export function createGatewayServer(options: GatewayServerOptions): GatewayServe
    */
   function responsesStreamLine(
     json: Record<string, unknown>,
-    requestModel: string,
-    id: string,
-    toolArguments: Map<number, ResponseToolArguments>,
+    state: ResponsesStreamState,
   ): Array<{ type: string; data: Record<string, unknown> }> {
-    const model = typeof json['model'] === 'string' ? json['model'] : requestModel
     const choices = Array.isArray(json['choices']) ? json['choices'] : []
     const choice = choices[0] as Record<string, unknown> | undefined
     const delta = choice?.['delta'] as Record<string, unknown> | undefined
-    const finish = choice?.['finish_reason']
     const events: Array<{ type: string; data: Record<string, unknown> }> = []
     if (typeof delta?.['content'] === 'string' && delta['content'] !== '') {
-      events.push({ type: 'response.output_text.delta', data: { delta: delta['content'], item_id: id, output_index: 0, content_index: 0 } })
+      if (state.text === undefined) {
+        state.text = {
+          itemId: `msg_${randomUUID().replaceAll('-', '').slice(0, 24)}`,
+          outputIndex: state.nextOutputIndex++,
+          text: '',
+          started: false,
+        }
+      }
+      const text = state.text
+      if (!text.started) {
+        text.started = true
+        events.push({
+          type: 'response.output_item.added',
+          data: {
+            output_index: text.outputIndex,
+            item: {
+              id: text.itemId,
+              type: 'message',
+              status: 'in_progress',
+              role: 'assistant',
+              content: [],
+            },
+          },
+        })
+        events.push({
+          type: 'response.content_part.added',
+          data: {
+            item_id: text.itemId,
+            output_index: text.outputIndex,
+            content_index: 0,
+            part: { type: 'output_text', text: '', annotations: [] },
+          },
+        })
+      }
+      text.text += delta['content']
+      events.push({
+        type: 'response.output_text.delta',
+        data: {
+          delta: delta['content'],
+          item_id: text.itemId,
+          output_index: text.outputIndex,
+          content_index: 0,
+        },
+      })
     }
     const toolCalls = Array.isArray(delta?.['tool_calls']) ? delta['tool_calls'] : []
     for (const call of toolCalls) {
@@ -999,44 +1241,99 @@ export function createGatewayServer(options: GatewayServerOptions): GatewayServe
       const callRecord = call as Record<string, unknown>
       const fn = callRecord['function'] as Record<string, unknown> | undefined
       const index = typeof callRecord['index'] === 'number' ? callRecord['index'] : 0
-      let state = toolArguments.get(index)
-      if (state === undefined) {
-        state = { arguments: '' }
-        toolArguments.set(index, state)
+      let tool = state.tools.get(index)
+      if (tool === undefined) {
+        tool = {
+          itemId: `fc_${randomUUID().replaceAll('-', '').slice(0, 24)}`,
+          outputIndex: state.nextOutputIndex++,
+          callId: `call_${randomUUID().replaceAll('-', '').slice(0, 24)}`,
+          name: '',
+          arguments: '',
+          started: false,
+        }
+        state.tools.set(index, tool)
       }
-      if (callRecord['id'] !== undefined) {
-        state.callId = String(callRecord['id'])
+      if (typeof callRecord['id'] === 'string' && callRecord['id'] !== '') {
+        tool.callId = callRecord['id']
       }
       const name = fn?.['name']
-      if (typeof name === 'string' && name !== '') state.name = name
+      if (typeof name === 'string' && name !== '') tool.name = name
+      if (!tool.started) {
+        tool.started = true
+        events.push({
+          type: 'response.output_item.added',
+          data: {
+            output_index: tool.outputIndex,
+            item: {
+              id: tool.itemId,
+              type: 'function_call',
+              status: 'in_progress',
+              call_id: tool.callId,
+              name: tool.name,
+              arguments: '',
+            },
+          },
+        })
+      }
       if (typeof fn?.['arguments'] === 'string' && fn['arguments'] !== '') {
-        state.arguments += fn['arguments']
+        tool.arguments += fn['arguments']
         events.push({
           type: 'response.function_call_arguments.delta',
-          data: { item_id: id, output_index: index, delta: String(fn['arguments']) },
+          data: {
+            item_id: tool.itemId,
+            output_index: tool.outputIndex,
+            delta: fn['arguments'],
+          },
         })
       }
     }
     return events
   }
 
-  /** 把所有未收尾的工具参数按标准顺序补发 done 事件。 */
-  function flushToolArguments(
-    toolArguments: Map<number, ResponseToolArguments>,
-    responseId: string,
+  /** 按标准顺序结束当前流中的文本项和函数调用项。 */
+  function flushResponsesStream(
+    state: ResponsesStreamState,
   ): Array<{ type: string; data: Record<string, unknown> }> {
     const events: Array<{ type: string; data: Record<string, unknown> }> = []
-    for (const [index, state] of toolArguments) {
-      if (state.callId === undefined) continue
+    if (state.text?.started === true) {
+      const text = state.text
+      events.push({
+        type: 'response.output_text.done',
+        data: {
+          item_id: text.itemId,
+          output_index: text.outputIndex,
+          content_index: 0,
+          text: text.text,
+        },
+      })
+      events.push({
+        type: 'response.content_part.done',
+        data: {
+          item_id: text.itemId,
+          output_index: text.outputIndex,
+          content_index: 0,
+          part: { type: 'output_text', text: text.text, annotations: [] },
+        },
+      })
+      events.push({
+        type: 'response.output_item.done',
+        data: { output_index: text.outputIndex, item: responseMessageItem(text) },
+      })
+    }
+    const tools = [...state.tools.values()].sort((left, right) => left.outputIndex - right.outputIndex)
+    for (const tool of tools) {
+      if (!tool.started) continue
       events.push({
         type: 'response.function_call_arguments.done',
         data: {
-          item_id: responseId,
-          output_index: index,
-          call_id: state.callId,
-          name: state.name ?? '',
-          arguments: state.arguments,
+          item_id: tool.itemId,
+          output_index: tool.outputIndex,
+          arguments: tool.arguments,
         },
+      })
+      events.push({
+        type: 'response.output_item.done',
+        data: { output_index: tool.outputIndex, item: responseFunctionCallItem(tool) },
       })
     }
     return events
@@ -1104,10 +1401,18 @@ export function createGatewayServer(options: GatewayServerOptions): GatewayServe
       return
     }
 
-    let responseId = `resp_${Math.random().toString(36).slice(2, 14)}`
-    const toolArguments = new Map<number, ResponseToolArguments>()
+    const responseId = `resp_${randomUUID().replaceAll('-', '').slice(0, 24)}`
+    const streamState: ResponsesStreamState = {
+      model: String(rawInput['model'] ?? ''),
+      nextOutputIndex: 0,
+      tools: new Map<number, ResponseToolArguments>(),
+    }
+    let sequenceNumber = 0
     let started = false
     let finished = false
+    const send = (type: string, data: Record<string, unknown>): void => {
+      res.write(responsesSseEvent(responseId, type, data, sequenceNumber++))
+    }
     const start = (): void => {
       if (started) return
       started = true
@@ -1116,22 +1421,34 @@ export function createGatewayServer(options: GatewayServerOptions): GatewayServe
         'Cache-Control': 'no-cache',
         'X-Accel-Buffering': 'no',
       })
-      res.write(responsesSseEvent(responseId, 'response.created', {
-        response: { id: responseId, object: 'response', status: 'in_progress', model: rawInput['model'] ?? '' },
-      }))
+      send('response.created', {
+        response: {
+          id: responseId,
+          object: 'response',
+          status: 'in_progress',
+          model: streamState.model,
+          output: [],
+        },
+      })
     }
-    const finish = (): void => {
+    const finish = (output?: Array<Record<string, unknown>>): void => {
       if (!started || finished) return
       finished = true
-      res.write(responsesSseEvent(responseId, 'response.completed', {
-        response: { id: responseId, object: 'response', status: 'completed', model: rawInput['model'] ?? '' },
-      }))
+      send('response.completed', {
+        response: {
+          id: responseId,
+          object: 'response',
+          status: 'completed',
+          model: streamState.model,
+          output: output ?? responsesOutput(streamState),
+        },
+      })
       res.end()
     }
     const completeStream = (): void => {
       start()
-      for (const item of flushToolArguments(toolArguments, responseId)) {
-        res.write(responsesSseEvent(responseId, item.type, item.data))
+      for (const item of flushResponsesStream(streamState)) {
+        send(item.type, item.data)
       }
       finish()
     }
@@ -1142,17 +1459,65 @@ export function createGatewayServer(options: GatewayServerOptions): GatewayServe
       json => {
         const convertedResponse = chatToResponses(json, rawInput['model'] as string)
         start()
-        res.write(responsesSseEvent(responseId, 'response.output_text.delta', {
-          delta: String(
-            Array.isArray(convertedResponse['output'])
-              ? (convertedResponse['output'] as Array<Record<string, unknown>>)[0]?.['text'] ?? ''
-              : '',
-          ),
-          item_id: responseId,
-          output_index: 0,
-          content_index: 0,
-        }))
-        finish()
+        const output = Array.isArray(convertedResponse['output'])
+          ? convertedResponse['output'] as Array<Record<string, unknown>>
+          : []
+        for (const [outputIndex, item] of output.entries()) {
+          if (item['type'] === 'message') {
+            const content = Array.isArray(item['content']) ? item['content'] : []
+            const part = content[0] as Record<string, unknown> | undefined
+            const itemId = String(item['id'] ?? `msg_${randomUUID().replaceAll('-', '').slice(0, 24)}`)
+            const text = typeof part?.['text'] === 'string' ? part['text'] : ''
+            send('response.output_item.added', {
+              output_index: outputIndex,
+              item: { ...item, status: 'in_progress', content: [] },
+            })
+            send('response.content_part.added', {
+              item_id: itemId,
+              output_index: outputIndex,
+              content_index: 0,
+              part: { type: 'output_text', text: '', annotations: [] },
+            })
+            send('response.output_text.delta', {
+              item_id: itemId,
+              output_index: outputIndex,
+              content_index: 0,
+              delta: text,
+            })
+            send('response.output_text.done', {
+              item_id: itemId,
+              output_index: outputIndex,
+              content_index: 0,
+              text,
+            })
+            send('response.content_part.done', {
+              item_id: itemId,
+              output_index: outputIndex,
+              content_index: 0,
+              part: { type: 'output_text', text, annotations: [] },
+            })
+            send('response.output_item.done', { output_index: outputIndex, item })
+          } else if (item['type'] === 'function_call') {
+            const itemId = String(item['id'] ?? `fc_${randomUUID().replaceAll('-', '').slice(0, 24)}`)
+            const argumentsText = typeof item['arguments'] === 'string' ? item['arguments'] : ''
+            send('response.output_item.added', {
+              output_index: outputIndex,
+              item: { ...item, status: 'in_progress', arguments: '' },
+            })
+            send('response.function_call_arguments.delta', {
+              item_id: itemId,
+              output_index: outputIndex,
+              delta: argumentsText,
+            })
+            send('response.function_call_arguments.done', {
+              item_id: itemId,
+              output_index: outputIndex,
+              arguments: argumentsText,
+            })
+            send('response.output_item.done', { output_index: outputIndex, item })
+          }
+        }
+        finish(output)
       },
       line => {
         const data = line.startsWith('data:') ? line.slice(5).trim() : ''
@@ -1164,15 +1529,15 @@ export function createGatewayServer(options: GatewayServerOptions): GatewayServe
           return
         }
         start()
-        for (const item of responsesStreamLine(event, String(rawInput['model'] ?? ''), responseId, toolArguments)) {
-          res.write(responsesSseEvent(responseId, item.type, item.data))
+        for (const item of responsesStreamLine(event, streamState)) {
+          send(item.type, item.data)
         }
       },
       () => completeStream(),
       (status, message, kind) => {
         if (!started) writeError(res, status, message, kind)
         else {
-          res.write(responsesSseEvent(responseId, 'error', { message, type: kind }))
+          send('error', { message, type: kind })
           res.end()
         }
       },
