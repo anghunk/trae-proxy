@@ -27,3 +27,21 @@
 - 上游 dsh-connect-trae 使用 **MIT** 许可，与本项目的 MIT 许可证兼容；MIT 要求保留版权声明，见 `LICENSE` 与各源码文件头部注释。
 - `laojichao/trae-local-api` 未声明许可证（保留所有权利），仅作为协议调研线索，未复制、修改或分发其代码。
 - 本项目**不重新打包或再分发**上述参考项目的源码。
+
+## 前端依赖
+
+管理台使用以下 npm 依赖（构建时打包进 `web/dist`），各自版权与许可如下：
+
+| 依赖 | 版本 | 许可证 | 用途 |
+| --- | --- | --- | --- |
+| React | 19.x | MIT | UI 组件库 |
+| React DOM | 19.x | MIT | DOM 渲染 |
+| Vite | 8.x | MIT | 前端构建工具 |
+| @vitejs/plugin-react | 6.x | MIT | React 插件 |
+| TypeScript | 7.x | Apache-2.0 | 类型检查/编译 |
+
+完整许可证文本见各依赖的 `LICENSE` 文件（`node_modules`）与
+[React License](https://github.com/facebook/react/blob/main/LICENSE)、
+[Vite License](https://github.com/vitejs/vite/blob/main/LICENSE)。
+
+后端运行时保持零第三方 npm 依赖；SQLite 使用 Node.js 内置 `node:sqlite`。

@@ -1,103 +1,63 @@
+/**
+ * 把统一网关注入 opencode.jsonc。
+ *
+ * 新网关只保留一个 127.0.0.1:39310 OpenAI 兼容端点，模型 id 自带 provider
+ * 前缀（如 trae-cn/glm-5.3），API key 由管理台创建，不再使用 keys/*.key 文件。
+ *
+ * 用法：
+ *   1. 先启动网关并在管理台创建管理员 + API key；
+ *   2. 把 key 写入环境变量 TRAE_PROXY_KEY（避免留在终端历史）：
+ *      TRAE_PROXY_KEY=tr-xxxxxxxx node scripts/inject-config.cjs
+ *   3. 重启 opencode 生效。
+ */
+
 const fs = require('node:fs')
 const path = require('node:path')
 
 const cfgPath = path.join(__dirname, '..', '..', 'opencode.jsonc')
-const cfg = JSON.parse(fs.readFileSync(cfgPath, 'utf8'))
-cfg.provider = cfg.provider || {}
+const gatewayBase = process.env['TRAE_PROXY_BASE'] || 'http://127.0.0.1:39310'
+const gatewayKey = process.env['TRAE_PROXY_KEY'] || ''
 
-const K = path.join(__dirname, '..', 'keys').replace(/\\/g, '/')
-const keyFile = (f) => `{file:${K}/${f}}`
-const lim = (context, output = 32768) => ({ context, output })
-const text = () => ({ modalities: { input: ['text'], output: ['text'] } })
-
-function entry(name, context) {
-  return { name, limit: lim(context), ...text() }
+function readConfig() {
+  const raw = fs.readFileSync(cfgPath, 'utf8')
+  if (raw.trimStart().startsWith('{')) return JSON.parse(raw)
+  return JSON.parse(raw.replace(/\/\/.*$/gm, '').replace(/\/\*[\s\S]*?\*\//g, ''))
 }
 
-// 仅纳入正规对话模型（排除 custom_model_* 占位与 *_subagent/file_search 等内部 agent）
-// 注意：这只是元数据表（显示名 / 上下文长度），实际注入时会与代理实时目录取交集。
-const STATIC_CN_MODELS = {
-  'glm-5.3': entry('GLM-5.3 (Trae)', 200000),
-  'glm-5.2': entry('GLM-5.2 (Trae)', 200000),
-  'glm-5-turbo': entry('GLM-5-Turbo (Trae)', 128000),
-  'DeepSeek-V4-Pro-Official': entry('DeepSeek-V4-Pro (Trae)', 200000),
-  'DeepSeek-V4-Flash-Official': entry('DeepSeek-V4-Flash (Trae)', 200000),
-  'kimi-k3': entry('Kimi-K3 (Trae)', 200000),
-  'kimi-k2.7-code': entry('Kimi-K2.7-Code (Trae)', 200000),
-  'kimi-k2.6': entry('Kimi-K2.6 (Trae)', 200000),
-  'Doubao-Seed-2.1-Pro': entry('Doubao-Seed-2.1-Pro (Trae)', 200000),
-  'Doubao-Seed-2.1-Turbo': entry('Doubao-Seed-2.1-Turbo (Trae)', 200000),
-  'Doubao-Seed-2.0-Code': entry('Doubao-Seed-2.0-Code (Trae)', 200000),
-  'Doubao-Seed-Evolving': entry('Doubao-Seed-Evolving (Trae)', 200000),
-  'seed-code-pro-0430': entry('Seed-Code-Pro-0430 (Trae)', 200000),
-  'minimax-m3': entry('MiniMax-M3 (Trae)', 200000),
-  'qwen3.8-max': entry('Qwen3.8-Max (Trae)', 200000),
-  'qwen-3.7-plus': entry('Qwen-3.7-Plus (Trae)', 128000),
-  'sagitta': entry('Sagitta (Trae)', 128000),
-  'aquila': entry('Aquila (Trae)', 128000),
-}
-
-const STATIC_AI_MODELS = {
-  'gpt-5.4': entry('GPT-5.4 (Trae国际)', 272000),
-  'gpt-5.2': entry('GPT-5.2 (Trae国际)', 272000),
-  'gemini-3.1-pro': entry('Gemini-3.1-Pro (Trae国际)', 200000),
-  'minimax-m3': entry('MiniMax-M3 (Trae国际)', 200000),
-}
-
-/**
- * 用代理实时目录过滤静态表。
- *
- * 企业版与个人版的模型目录不是同一套（企业版走企业网关，id 大小写都不同），
- * 直接注入静态表会把不存在的模型列进 opencode，选中后必然 404。
- * 代理未启动 / 未登录时原样返回静态表，保持原有行为。
- */
-async function filterByLive(models, baseURL, keyName) {
-  try {
-    const key = fs.readFileSync(path.join(__dirname, '..', 'keys', keyName), 'utf8').trim()
-    const res = await fetch(`${baseURL}/v1/models`, {
-      headers: { Authorization: `Bearer ${key}` },
-      signal: AbortSignal.timeout(3000),
-    })
-    if (!res.ok) return models
-    const live = new Set((await res.json()).data.map((m) => m.id))
-    const kept = Object.fromEntries(Object.entries(models).filter(([id]) => live.has(id)))
-    if (Object.keys(kept).length === 0) return models
-    const skipped = Object.keys(models).filter((id) => !live.has(id))
-    const missing = [...live].filter((id) => !(id in models) && !id.startsWith('custom_model_') && id !== 'summary')
-    console.log(`[${baseURL}] 注入 ${Object.keys(kept).length} 个模型`)
-    if (skipped.length > 0) console.log(`  目录中不存在，已跳过: ${skipped.join(', ')}`)
-    if (missing.length > 0) console.log(`  目录中存在但静态表没有元数据，未注入: ${missing.join(', ')}`)
-    return kept
-  } catch {
-    console.log(`[${baseURL}] 代理不可用，使用静态模型表`)
-    return models
-  }
+async function fetchModels() {
+  if (gatewayKey === '') return undefined
+  const res = await fetch(`${gatewayBase}/v1/models`, {
+    headers: { Authorization: `Bearer ${gatewayKey}` },
+    signal: AbortSignal.timeout(5000),
+  })
+  if (!res.ok) return undefined
+  return (await res.json()).data
 }
 
 async function main() {
-  cfg.provider['trae-cn'] = {
+  const cfg = readConfig()
+  const models = await fetchModels()
+  const provider = models === undefined ? undefined : {
     npm: '@ai-sdk/openai-compatible',
-    name: 'Trae 国内版',
+    name: 'Trae Proxy 统一网关',
     options: {
-      baseURL: 'http://127.0.0.1:39303/v1',
-      apiKey: keyFile('cn.key'),
+      baseURL: `${gatewayBase}/v1`,
+      ...(gatewayKey === '' ? {} : { apiKey: gatewayKey }),
     },
-    models: await filterByLive(STATIC_CN_MODELS, 'http://127.0.0.1:39303', 'cn.key'),
+    ...(models === undefined ? {} : { models: models.map(m => ({ id: m.id })) }),
   }
-
-  cfg.provider['trae-ai'] = {
-    npm: '@ai-sdk/openai-compatible',
-    name: 'Trae 国际版',
-    options: {
-      baseURL: 'http://127.0.0.1:39304/v1',
-      apiKey: keyFile('ai.key'),
-    },
-    models: await filterByLive(STATIC_AI_MODELS, 'http://127.0.0.1:39304', 'ai.key'),
-  }
-
+  cfg.provider = cfg.provider || {}
+  cfg.provider['trae-proxy'] = provider
   fs.copyFileSync(cfgPath, cfgPath + '.bak.trae')
   fs.writeFileSync(cfgPath, JSON.stringify(cfg, null, 2) + '\n', 'utf8')
-  console.log('trae providers injected; backup opencode.jsonc.bak.trae')
+
+  if (models === undefined) {
+    console.log(`[${gatewayBase}] 网关不可用或未设置 TRAE_PROXY_KEY，已注入无 apiKey 的 provider`)
+    console.log('  请启动网关并创建 API key 后重试，否则 opencode 会提示缺少凭据。')
+  } else {
+    console.log(`[${gatewayBase}] 注入 ${models.length} 个模型（id 已带 provider 前缀）`)
+  }
+  console.log('已备份 opencode.jsonc.bak.trae')
 }
 
-main().catch((e) => { console.error(e); process.exit(1) })
+main().catch(e => { console.error(e); process.exit(1) })

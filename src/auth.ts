@@ -17,7 +17,13 @@ import { readFile } from 'node:fs/promises'
 import { traeStorageCandidates, type TraeEdition, type TraeStorageCandidate } from './paths.ts'
 import { parseTraeCliToken, parseTraeStorageDocument } from './decrypt.ts'
 import { regionOfCredential, regionOfEdition, type TraeRegion } from './region.ts'
-import type { TraeRefreshOutcome } from './refresh.ts'
+
+export interface TraeRefreshOutcome {
+  accessToken: string
+  refreshToken?: string
+  expiresAtMs: number
+  refreshExpiresAtMs?: number
+}
 
 export interface TraeCredential {
   accessToken: string

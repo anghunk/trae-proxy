@@ -1,6 +1,8 @@
 # ===== 隐私 / 密钥（绝不入库）=====
 # 本地生成的 bearer key（代理鉴权令牌）
 keys/*.key
+# 统一网关 SQLite（含管理员账户、上游 API Key、用量明细）
+config/
 # 运行日志 / pid（可能含本机路径、账号信息）
 logs/*
 !logs/.gitkeep
@@ -36,4 +38,3 @@ desktop.ini
 
 # 每日签到状态（本机生成，含计划时刻，不入库）
 state/
-

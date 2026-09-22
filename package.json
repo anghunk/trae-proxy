@@ -1,0 +1,21 @@
+{
+  "name": "trae-proxy",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "统一本地模型网关：Trae 登录态 + 任意 OpenAI/Anthropic/Gemini 上游，带 React 配置台",
+  "scripts": {
+    "start": "node src/serve.ts",
+    "dev": "node src/serve.ts",
+    "build": "npm --prefix web run build",
+    "typecheck": "tsc --noEmit -p tsconfig.json && npm --prefix web run typecheck",
+    "install:web": "npm --prefix web install"
+  },
+  "engines": {
+    "node": ">=22.19"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "typescript": "^7.0.2"
+  }
+}

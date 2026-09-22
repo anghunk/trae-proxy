@@ -1,248 +1,123 @@
 /**
- * trae-proxy 守护入口：一个进程同时服务国内(cn)与国际(ai)两个回环端点。
+ * trae-proxy 统一网关入口。
  *
- * 改自 dingminhua/dsh-connect-trae（MIT，Copyright (c) 2026 LaoDing）。
- * 仅依赖 Node 内置能力，TypeScript 由 Node 22.19+/24 的类型擦除直接运行，无需构建。
+ * 默认在 127.0.0.1:39310 启动统一 OpenAI 兼容网关 + React 配置台：
+ * - 首次启动自动初始化 SQLite（config/trae-proxy.db）并注册默认 Trae providers；
+ * - 定时刷新各 provider 模型目录、清理过期会话与用量；
+ * - 管理台保存配置后立即热生效。
+ *
+ * 仅依赖 Node 内置能力，TypeScript 由 Node 22.19+/24 的类型擦除直接运行。
  *
  * @module trae-proxy/serve
  */
 
-import { randomBytes } from 'node:crypto'
-import { mkdir, readFile, writeFile } from 'node:fs/promises'
-import { dirname, join } from 'node:path'
-import { fileURLToPath } from 'node:url'
-import { LiveTraeStore } from './auth.ts'
-import { fromSoloModels, TraeCatalog } from './catalog.ts'
-import { resolveEnterpriseGatewayFromStorage } from './enterprise-gateway.ts'
-import { resolveTraeIdentity } from './identity.ts'
-import { traeStorageCandidates } from './paths.ts'
-import { refreshTraeCredential } from './refresh.ts'
-import { REGION_GATEWAYS, regionOfCredential, regionOfEdition, type TraeRegion } from './region.ts'
-import { createTraeShim, type TraeShim, type ShimLogger } from './shim.ts'
-import { TraeSoloBridge } from './solo-bridge.ts'
-import { TraeSoloUpstreamClient } from './solo.ts'
-import { TraeSigninClient } from './signin.ts'
-import { SigninScheduler, formatSec } from './scheduler.ts'
+import { mkdirSync } from 'node:fs'
+import { createGatewayServer } from './gateway/server.ts'
+import { CONFIG_DIR, DEFAULT_DB_PATH, openGatewayStore, type ProviderRecord } from './gateway/store.ts'
 
-const HERE = dirname(fileURLToPath(import.meta.url))
-const ROOT = dirname(HERE)
-const KEYS_DIR = join(ROOT, 'keys')
-const STATE_DIR = join(ROOT, 'state')
-
-const SIGNIN_ENABLED = (process.env['TRAE_SIGNIN'] ?? 'on') !== 'off'
-const SIGNIN_START_HOUR = Number(process.env['TRAE_SIGNIN_START_HOUR'] ?? 7)
-const SIGNIN_END_HOUR = Number(process.env['TRAE_SIGNIN_END_HOUR'] ?? 10)
-const SIGNIN_TICK_MS = 5 * 60 * 1000
-const SIGNIN_INITIAL_DELAY_MS = 60 * 1000
-
-const REGION_PORTS: Record<TraeRegion, number> = {
-  cn: Number(process.env['TRAE_CN_PORT'] ?? 39303),
-  ai: Number(process.env['TRAE_AI_PORT'] ?? 39304),
-}
+const PORT = Number(process.env['TRAE_PROXY_PORT'] ?? 39310)
+const HOST = process.env['TRAE_PROXY_HOST'] ?? '127.0.0.1'
+const USAGE_KEEP_DAYS = Number(process.env['TRAE_PROXY_USAGE_KEEP_DAYS'] ?? 90)
 
 function ts(): string {
   return new Date().toISOString()
 }
 
-const logger: ShimLogger = {
-  info: (...args) => process.stdout.write(`[${ts()}] [info] ${args.map(String).join(' ')}\n`),
-  warn: (...args) => process.stderr.write(`[${ts()}] [warn] ${args.map(String).join(' ')}\n`),
-  error: (...args) => process.stderr.write(`[${ts()}] [error] ${args.map(String).join(' ')}\n`),
+const logger = {
+  info: (message: string, detail?: unknown) => {
+    process.stdout.write(`[${ts()}] [info] ${message}${detail === undefined ? '' : ` ${JSON.stringify(detail)}`}\n`)
+  },
+  warn: (message: string, detail?: unknown) => {
+    process.stderr.write(`[${ts()}] [warn] ${message}${detail === undefined ? '' : ` ${JSON.stringify(detail)}`}\n`)
+  },
+  error: (message: string, detail?: unknown) => {
+    process.stderr.write(`[${ts()}] [error] ${message}${detail === undefined ? '' : ` ${JSON.stringify(detail)}`}\n`)
+  },
 }
 
-async function loadOrCreateKey(file: string): Promise<string> {
-  try {
-    const existing = (await readFile(file, 'utf8')).trim()
-    if (existing !== '') return existing
-  } catch {
-    // 不存在则生成
-  }
-  const key = randomBytes(32).toString('base64url')
-  await mkdir(dirname(file), { recursive: true, mode: 0o700 })
-  await writeFile(file, `${key}\n`, { mode: 0o600 })
-  return key
-}
-
-interface RegionRuntime {
-  region: TraeRegion
-  store: LiveTraeStore
-  solo: TraeSoloUpstreamClient
-  catalog: TraeCatalog
-  signin: TraeSigninClient
-  scheduler: SigninScheduler
-}
-
-async function refreshModels(rt: RegionRuntime): Promise<void> {
-  try {
-    const models = await rt.solo.fetchModels()
-    if (models.length > 0) {
-      rt.catalog.set(fromSoloModels(models))
-      logger.info(`trae(${rt.region}): 模型目录已刷新，共 ${models.length} 个`)
-    }
-  } catch (error: unknown) {
-    logger.warn(`trae(${rt.region}): 模型目录刷新失败，使用内置 fallback（${String(error instanceof Error ? error.message : error)}）`)
-  }
-}
-
-/** 已上报过的上游基址，保证同一区域同一 host 只在首次生效时打印一行日志。 */
-const reportedBases = new Set<string>()
-
-/**
- * 解析当前登录态实际应使用的上游基址。
- *
- * 桌面端把自己真正调用的 API host 写在 storage.json 的 `iCubeHostInfo` 里（企业版
- * SaaS 账号指向 `console.enterprise.trae.cn`）。这类账号在公开 SOLO 通道上会被上游
- * 拒绝——HTTP 200 但只回一个 error 事件（公开网关 4011 / 企业网关 4001），所以以桌面端
- * 自己记录的 host 为准。没有该字段、或它就等于区域公开网关时返回 undefined，
- * 由上游客户端回落公开网关。
- */
-async function resolveUpstreamBase(region: TraeRegion, store: LiveTraeStore): Promise<string | undefined> {
-  try {
-    const credential = await store.resolve()
-    const candidate = traeStorageCandidates().find(item =>
-      item.source === 'desktop' && item.edition === credential.edition)
-    if (candidate === undefined) return undefined
-    const gateway = resolveEnterpriseGatewayFromStorage(await readFile(candidate.path, 'utf8'))
-    if (gateway === undefined || gateway.chat === REGION_GATEWAYS[region].chat) return undefined
-    const tag = `${region}|${gateway.chat}`
-    if (!reportedBases.has(tag)) {
-      reportedBases.add(tag)
-      logger.info(`trae(${region}): 使用桌面端记录的 API host ${gateway.chat}`)
-    }
-    return gateway.chat
-  } catch {
-    return undefined
-  }
-}
-
-async function buildRegion(region: TraeRegion): Promise<{ shim: TraeShim; rt: RegionRuntime }> {
-  const store = new LiveTraeStore({
-    region,
-    refresh: async credential => {
-      const candidates = traeStorageCandidates().filter(item =>
-        item.source === 'desktop' && regionOfEdition(item.edition) === region
-        && item.edition === credential.edition)
-      let device: { deviceId: string; machineId: string } | undefined
-      try {
-        const id = await resolveTraeIdentity(candidates.length > 0 ? candidates : traeStorageCandidates(), credential.edition)
-        device = { deviceId: id.deviceId, machineId: id.machineId }
-      } catch {
-        device = undefined
-      }
-      return refreshTraeCredential(credential, undefined, device)
+/** 首次启动写入内置 Trae provider 记录（不覆盖用户已有配置）。 */
+function seedDefaultProviders(store: ReturnType<typeof openGatewayStore>): void {
+  const now = Date.now()
+  const seeds: Array<Omit<ProviderRecord, 'createdAt' | 'updatedAt'>> = [
+    {
+      id: 'trae-cn',
+      type: 'trae-cn',
+      name: 'Trae 国内',
+      enabled: 1,
+      extraHeaders: '{}',
+      models: '[]',
+      settings: '{}',
     },
-  })
-
-  const identity = async () => {
-    const credential = await store.resolve()
-    const candidates = traeStorageCandidates().filter(item =>
-      item.source === 'desktop' && regionOfCredential(credential) === regionOfEdition(item.edition)
-      && item.edition === credential.edition)
-    return resolveTraeIdentity(candidates.length > 0 ? candidates : traeStorageCandidates(), credential.edition)
+    {
+      id: 'trae-ai',
+      type: 'trae-ai',
+      name: 'Trae 国际',
+      enabled: 1,
+      extraHeaders: '{}',
+      models: '[]',
+      settings: '{}',
+    },
+  ]
+  for (const seed of seeds) {
+    if (store.getProvider(seed.id) !== undefined) continue
+    store.upsertProvider({ ...seed, createdAt: now, updatedAt: now })
+    logger.info(`已初始化默认 provider: ${seed.id}`)
   }
-
-  const solo = new TraeSoloUpstreamClient({
-    credential: () => store.resolve(),
-    identity,
-    // 按请求实时解析：企业版账号走企业网关，普通账号回落公开网关。
-    baseUrl: () => resolveUpstreamBase(region, store),
-    log: (message, detail) => logger.warn(message, detail),
-  })
-
-  const catalog = new TraeCatalog(region)
-  const bridge = new TraeSoloBridge(solo, catalog)
-  const signin = new TraeSigninClient(region, store, identity)
-  const scheduler = new SigninScheduler({
-    stateFile: join(STATE_DIR, 'signin-state.json'),
-    startHour: SIGNIN_START_HOUR,
-    endHour: SIGNIN_END_HOUR,
-    log: m => logger.info(m),
-  })
-  const rt: RegionRuntime = { region, store, solo, catalog, signin, scheduler }
-
-  const key = await loadOrCreateKey(join(KEYS_DIR, `${region}.key`))
-  const shim = createTraeShim({
-    region,
-    port: REGION_PORTS[region],
-    token: key,
-    store,
-    client: bridge,
-    catalog,
-    logger,
-    signinStatus: SIGNIN_ENABLED ? async () => {
-      const entry = await scheduler.entry(region) ?? await scheduler.plan(region)
-      let view: unknown = null
-      let error: string | undefined
-      try { view = await signin.getStatus() }
-      catch (e) { error = e instanceof Error ? e.message : String(e) }
-      return {
-        region,
-        scheduledAt: formatSec(entry.runAtSec),
-        claimedToday: entry.claimed,
-        lastResult: entry.result,
-        view,
-        ...(error === undefined ? {} : { error }),
-      }
-    } : undefined,
-    signinClaim: SIGNIN_ENABLED ? async () => {
-      const outcome = await scheduler.runNow(region, () => signin.claim())
-      return { region, ...outcome }
-    } : undefined,
-  })
-  return { shim, rt }
 }
 
 async function main(): Promise<void> {
-  await mkdir(KEYS_DIR, { recursive: true, mode: 0o700 })
-  if (SIGNIN_ENABLED) await mkdir(STATE_DIR, { recursive: true, mode: 0o700 })
-  const runtimes: RegionRuntime[] = []
-  const shims: TraeShim[] = []
-  let signinTimer: NodeJS.Timeout | undefined
+  mkdirSync(CONFIG_DIR, { recursive: true, mode: 0o700 })
+  const store = openGatewayStore(DEFAULT_DB_PATH)
+  seedDefaultProviders(store)
 
-  for (const region of ['cn', 'ai'] as TraeRegion[]) {
-    const built = await buildRegion(region)
-    await built.shim.ready
-    shims.push(built.shim)
-    runtimes.push(built.rt)
-    logger.info(`trae(${region}) 已监听 ${built.shim.baseUrl()} (models=${built.rt.catalog.current().length})`)
-    if (SIGNIN_ENABLED) {
-      const plan = await built.rt.scheduler.plan(region)
-      logger.info(`trae(${region}) 今日签到计划 ${formatSec(plan.runAtSec)}`)
+  const server = createGatewayServer({
+    store,
+    port: PORT,
+    host: HOST,
+    logger,
+  })
+  await server.ready
+
+  const reload = await server.reloadProviders()
+  logger.info(`provider 已加载：${reload.enabled}/${reload.total} 启用`)
+  void server.refreshAllModels().then(results => {
+    for (const item of results) {
+      if (item.error === undefined) logger.info(`模型目录已刷新: ${item.providerId} (${item.count})`)
+      else logger.warn(`模型目录刷新失败: ${item.providerId} (${item.count} 缓存) ${item.error}`)
     }
-    void refreshModels(built.rt)
-  }
+  })
 
-  const timer = setInterval(() => {
-    for (const rt of runtimes) void refreshModels(rt)
-  }, 6 * 60 * 60 * 1000)
-  timer.unref()
-
-  async function signinTick(): Promise<void> {
-    for (const rt of runtimes) {
-      try {
-        await rt.scheduler.runIfDue(rt.region, () => rt.signin.claim())
-      } catch {
-        // 未登录/token 失效/国际区不支持：静默跳过
+  const refreshTimer = setInterval(() => {
+    void server.refreshAllModels().then(results => {
+      for (const item of results) {
+        if (item.error === undefined) logger.info(`模型目录已刷新: ${item.providerId} (${item.count})`)
+        else logger.warn(`模型目录刷新失败: ${item.providerId} (${item.count} 缓存) ${item.error}`)
       }
-    }
-  }
-  if (SIGNIN_ENABLED) {
-    setTimeout(() => { void signinTick() }, SIGNIN_INITIAL_DELAY_MS).unref()
-    signinTimer = setInterval(() => { void signinTick() }, SIGNIN_TICK_MS)
-    signinTimer.unref()
-    logger.info(`每日签到已启用：本地 ${SIGNIN_START_HOUR}:00–${SIGNIN_END_HOUR}:00 随机时刻自动领取`)
-  }
+    })
+  }, 6 * 60 * 60 * 1000)
+  refreshTimer.unref()
 
-  logger.info(`trae-proxy 就绪：国内 ${REGION_PORTS.cn} / 国际 ${REGION_PORTS.ai}`)
+  const cleanupTimer = setInterval(() => {
+    const now = Date.now()
+    store.deleteExpiredSessions(now)
+    const pruned = store.pruneUsage(now - USAGE_KEEP_DAYS * 24 * 60 * 60 * 1000)
+    if (pruned > 0) logger.info(`用量清理完成，删除 ${pruned} 条`)
+  }, 60 * 60 * 1000)
+  cleanupTimer.unref()
+
+  logger.info(`统一网关已就绪: ${server.baseUrl()} (healthz=/healthz, models=/v1/models)`)
+  logger.info(`管理台: ${server.baseUrl()}/  (首次访问请先创建管理员)`)
+  logger.info(`数据库: ${DEFAULT_DB_PATH}`)
 
   let closing = false
   const shutdown = async (signal: string): Promise<void> => {
     if (closing) return
     closing = true
     logger.info(`收到 ${signal}，正在关闭...`)
-    clearInterval(timer)
-    if (signinTimer !== undefined) clearInterval(signinTimer)
-    await Promise.allSettled(shims.map(shim => shim.close()))
+    clearInterval(refreshTimer)
+    clearInterval(cleanupTimer)
+    await server.close()
+    store.close()
     process.exit(0)
   }
   process.on('SIGINT', () => { void shutdown('SIGINT') })
@@ -250,6 +125,6 @@ async function main(): Promise<void> {
 }
 
 main().catch((error: unknown) => {
-  logger.error('trae-proxy 启动失败：', error)
+  logger.error('统一网关启动失败', error)
   process.exit(1)
 })

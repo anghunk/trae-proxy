@@ -181,15 +181,12 @@ export class TraeSoloBridge implements TraeUpstreamClient {
       if (typeof input['model'] === 'string' && input['model'] !== '') model = input['model']
       // Resolve the display model id to the real llm_utils_chat config_name.
       // The Remote directory id may differ from the wire id (e.g. Seed-Code).
-      // Prefer the persisted catalog's `wireConfigName` when present, then fall
-      // back to the startup wire resolver keyed by display name/id; the resolver
-      // never depends on a user-refreshed or re-saved directory.
+      // 目录行里 id 即 wire config_name，优先直接用 id；resolver 只兜底
+      // 外部传入的显示 id（例如启动 wire map）。
       const entry = this.catalog?.current().find(item => item.id === model)
-      // The catalog row carries both halves once discovery has run; the
-      // resolver covers ids that came from elsewhere (startup wire map).
-      const fromCatalog = entry?.wireConfigName === undefined
+      const fromCatalog = entry === undefined
         ? undefined
-        : { configName: entry.wireConfigName, ...entry.wireFunction === undefined ? {} : { function: entry.wireFunction } }
+        : { configName: entry.id, ...entry.wireFunction === undefined ? {} : { function: entry.wireFunction } }
       const fromResolver = this.wireResolver?.(model) ?? this.wireResolver?.(entry?.name ?? '')
       const target = fromCatalog ?? fromResolver
       const wireModel = target?.configName ?? model

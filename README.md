@@ -1,45 +1,29 @@
 # trae-proxy
 
-在 opencode 里使用 Trae（含 TRAE SOLO CN）桌面端已登录模型的一个**纯 Node、零第三方依赖**本地代理。
+把 Trae（含 TRAE SOLO CN）桌面端**已登录的模型**统一转发成标准 **OpenAI 兼容 API** 的本地模型网关，
+并内置一个 **React 配置台**。它同时支持把任意第三方大模型上游（OpenAI 兼容 / Anthropic / Gemini / Ollama）
+接入同一个网关，最终统一从 `http://127.0.0.1:39310/v1` 转发出去。
 
-它把 Trae 桌面端的本地登录态转成 opencode 可直接调用的 **OpenAI 兼容** 端点：
+核心特性：
 
-- 国内版（cn）：`http://127.0.0.1:39303/v1`
-- 国际版（ai）：`http://127.0.0.1:39304/v1`
-
-一个进程同时服务两个区域，每个区域用独立的持久 `bearer key` 做本地鉴权。实测：
-登录态解密、模型目录（SOLO 通道约 39 个）、SSE 流式对话、工具调用（`finish_reason=tool_calls`）均可用。
+- **默认即 Trae 代理**：首次启动自动注册 `trae-cn`（国内）、`trae-ai`（国际）两个 provider，读取本机 Trae 登录态；
+- **统一网关**：所有 provider 共用同一个 `/v1/models`、`/v1/chat/completions` 端点；
+- **模型 id 带前缀**：形如 `trae-cn/glm-5.3`、`deepseek/deepseek-chat`；
+- **保存即生效**：在管理台新增/修改 provider、API key、模型映射后无需重启；
+- **登录保护**：单个管理员账户 + 多个可吊销 API key；
+- **SQLite 存储**：管理员、API key、provider 配置、用量明细都在本地 `config/trae-proxy.db`；
+- **用量统计**：按天、按 provider、按 key、按模型查看请求数、Token、成功率、耗时。
 
 > **须知**：本项目**参考（改写自）[dingminhua/dsh-connect-trae](https://github.com/dingminhua/dsh-connect-trae)**
 > （MIT，Copyright (c) 2026 LaoDing）及其独立改写版
 > **[weixiaokuan123/trae-proxy](https://github.com/weixiaokuan123/trae-proxy)**
-> （MIT，Copyright (c) 2026 weixiaokuan123），去掉了 DeepSeek Harness（DSH）插件外壳，只保留纯 Node 连接内核。
-> 它**只读** Trae 桌面端当前登录态，本身不提供账号切换。
-
-## 它做了什么
-
-Trae 桌面端把凭据加密存放在本地 `storage.json`，并使用私有的 SSE 事件协议。本代理：
-
-1. 用纯 `node:crypto` 离线解密本地登录态（硬编码盐 + AES-128-CBC + SHA-512 KDF），无需安装 Trae 之外的任何东西；
-2. 复刻设备指纹请求头（machineId / deviceId / appVersion 等）与 SOLO 通道请求；
-3. 把 Trae 私有的 SSE 事件桥接成标准 OpenAI `/v1/chat/completions`（含流式增量、`tool_calls`、`usage`）；
-4. token 刷新只在进程内存中进行，**绝不写回桌面端文件、不落地副本**。
-
-仅使用已验证的 SOLO 通道：模型目录 `get_detail_param` + 对话 `llm_utils_chat`。
-
-## 来源与许可
-
-参考（改写自）[dingminhua/dsh-connect-trae](https://github.com/dingminhua/dsh-connect-trae)（MIT，Copyright (c) 2026 LaoDing）。
-本项目的**直接上游**是它的独立改写版 [weixiaokuan123/trae-proxy](https://github.com/weixiaokuan123/trae-proxy)
-（MIT，Copyright (c) 2026 weixiaokuan123），本仓库在其基础上继续修改而成。
-其协议调研参考了 [Wang-JQ77/dsh-trae-api](https://github.com/Wang-JQ77/dsh-trae-api)（MIT）等项目。
-版权与署名详见 `LICENSE` 与 `THIRD_PARTY_NOTICES.md`，各源码文件头部亦有标注。
+> （MIT，Copyright (c) 2026 weixiaokuan123）。它**只读** Trae 桌面端当前登录态，本身不提供账号切换。
 
 ## 运行要求
 
-- Node.js **22.19+ 或 24+**：TypeScript 由 Node 原生类型擦除直接运行，**无需构建、无需 `npm install`**。
-- 本机已安装并登录 **Trae / TRAE SOLO CN** 桌面端（代理只读其登录态文件，不修改、不上传）。
-- 操作系统：Windows（提供 PowerShell 脚本）；macOS / Linux 可直接 `node src/serve.ts`。
+- Node.js **22.19+ 或 24+**：后端 TypeScript 由 Node 原生类型擦除直接运行，零第三方依赖。
+- 本机已安装并登录 **Trae / TRAE SOLO CN** 桌面端（Trae provider 只读其登录态文件，不修改、不上传）。
+- 前端需要构建一次（`npm install` 后 `npm run build`），构建产物由网关直接托管。
 
 登录态读取路径（按区域 / 版本自动探测，见 `src/paths.ts`）：
 
@@ -53,171 +37,115 @@ Trae 桌面端把凭据加密存放在本地 `storage.json`，并使用私有的
 > 国内区域（cn）同时探测 `Trae CN` 与 `TRAE SOLO CN`；国际区域（ai）探测另外两个。
 > 另支持 CN 的 CLI 明文旁路 `%USERPROFILE%\.trae-cn\trae-jwt-token`。
 
-## 安装
-
-### 1. 克隆到 opencode 配置目录
-
-**Windows（PowerShell）**
-
-```powershell
-git clone https://github.com/anghunk/trae-proxy.git "$env:USERPROFILE\.config\opencode\trae-proxy"
-```
-
-**macOS / Linux**
-
-```bash
-git clone https://github.com/anghunk/trae-proxy.git ~/.config/opencode/trae-proxy
-```
-
-### 2. 启动并注入配置（手动分步）
-
-```powershell
-cd "$env:USERPROFILE\.config\opencode\trae-proxy"
-
-# 后台启动（隐藏窗口，写 logs\proxy.pid，首次自动生成 keys\*.key）
-powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\start.ps1
-
-# 把 trae-cn / trae-ai 两个 provider 注入 opencode.jsonc（自动备份为 .bak.trae）
-node .\scripts\inject-config.cjs
-
-# 查看两个区域的登录状态与模型数
-powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\status.ps1
-```
-
-> `.ps1` 若在 Windows PowerShell 5.1 下出现中文乱码，跑一次 `node add-bom.cjs` 补 UTF-8 BOM。
-
-### 3. 重启 opencode
-
-**必须重启 opencode** 才会加载新注入的 provider。重启后在模型列表里选择
-`Trae 国内版` 或 `Trae 国际版` 下的模型（默认推荐 `trae-cn/glm-5.3`）。
-
-### 4. macOS / Linux 手动运行
-
-> 本节只记录手动运行指令，不会注册开机自启或系统计划任务。
-> 以下命令均以「当前目录即项目根目录」为前提。
->
-> `TRAE_SIGNIN=off` 表示关闭 Trae 自动签到。需要自动签到时，去掉该环境变量。
-
-进入项目目录：
+## 快速开始
 
 ```bash
 cd ~/code/trae-proxy
+npm install
+npm run build
+npm start
 ```
 
-**前台运行**
+启动后：
+
+- 管理台：`http://127.0.0.1:39310/`，首次访问先创建管理员；
+- 健康检查：`http://127.0.0.1:39310/healthz`；
+- OpenAI 兼容端点：`http://127.0.0.1:39310/v1`；
+- 数据库：`config/trae-proxy.db`。
+
+在管理台 **API Keys** 页创建一个 key（可限制只能访问某些 provider 前缀），
+然后任意 OpenAI 兼容客户端这样调用：
 
 ```bash
-TRAE_SIGNIN=off node src/serve.ts
+curl http://127.0.0.1:39310/v1/chat/completions \
+  -H "Authorization: Bearer tr-xxxxxxxx" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"trae-cn/glm-5.3","messages":[{"role":"user","content":"你好"}]}'
 ```
 
-前台运行时会占用当前终端；按 `Ctrl+C` 停止。
-
-**后台运行**
+模型列表：
 
 ```bash
-NODE_BIN="$(command -v node)"
-PROJECT_DIR="$(pwd)"
-screen -dmS trae-proxy zsh -lc "exec env TRAE_SIGNIN=off '$NODE_BIN' \
-'$PROJECT_DIR/src/serve.ts' \
->> '$PROJECT_DIR/logs/proxy.log' \
-2>> '$PROJECT_DIR/logs/proxy.err.log'"
+curl -H "Authorization: Bearer tr-xxxxxxxx" http://127.0.0.1:39310/v1/models
 ```
 
-**状态自检**
+## 管理台
 
-```bash
-screen -ls
-lsof -nP -iTCP:39303 -sTCP:LISTEN
-lsof -nP -iTCP:39304 -sTCP:LISTEN
+- **概览**：provider 启用状态、模型数、累计请求与 Token；
+- **Providers**：新增/编辑/停用/删除 provider；保存后立即热生效；Trae 类型无需 API Key；
+- **API Keys**：创建、复制、吊销、删除网关 key，可限制可访问的 provider；列表中的“配置”可将 key 一键填充到 CC Switch；
+- **用量**：按今天 / 7 天 / 30 天 / 全部查看汇总、按天图表、按 provider/key/model 分布、最近请求。
 
-KEY=$(tr -d '\n' < keys/cn.key)
-curl -fsS -H "Authorization: Bearer $KEY" http://127.0.0.1:39303/status
-```
+支持的 provider 类型：
 
-**停止后台服务**
-
-```bash
-screen -S trae-proxy -X quit
-pkill -f "$(pwd)/src/serve.ts"
-```
-
-**注入 opencode provider**
-
-```bash
-node scripts/inject-config.cjs
-```
-
-## 切换账号
-
-本代理**每次请求都实时重读**对应区域的 `storage.json`（无缓存）。要换账号时，
-直接在 Trae / TRAE SOLO CN 客户端里切换登录即可，**无需重启本代理**，下一次请求自动跟随。
-
-## 日常运维（Windows）
-
-| 操作 | 命令 |
+| 类型 | 说明 |
 | --- | --- |
-| 启动 | `scripts\start.ps1` |
-| 前台调试 | `scripts\start.ps1 -Foreground` |
-| 停止 | `scripts\stop.ps1` |
-| 状态 | `scripts\status.ps1` |
-| 开机自启 | `scripts\install-autostart.ps1` |
-| 取消自启 | `scripts\uninstall-autostart.ps1` |
+| `trae-cn` | Trae 国内版登录态 |
+| `trae-ai` | Trae 国际版登录态 |
+| `openai` | 任意 OpenAI 兼容服务（DeepSeek、OpenRouter、vLLM 等） |
+| `anthropic` | Anthropic Messages API |
+| `gemini` | Google Gemini API |
+| `ollama` | 本地 Ollama（默认 `http://127.0.0.1:11434/v1`） |
 
-自启通过「登录时触发的计划任务 + `wscript` 静默 VBS」实现，无黑框。
+> 上游 provider 的 `apiKey` 按你的要求**明文**存在本地 SQLite；管理员密码和网关 API key 只存哈希。
+
+## 注入 opencode（可选）
+
+统一网关本身就是 OpenAI 兼容端点，可以在 opencode 里直接填 `baseURL=http://127.0.0.1:39310/v1`
+和已创建的 API key。若想自动注入 provider 与实时模型目录，可运行：
+
+```bash
+TRAE_PROXY_KEY=tr-xxxxxxxx node scripts/inject-config.cjs
+```
+
+脚本会把 `trae-proxy` provider 写入 `opencode.jsonc`（自动备份为 `opencode.jsonc.bak.trae`），
+模型 id 保持 `trae-cn/...`、`deepseek/...` 这类前缀形式。`TRAE_PROXY_BASE` 可覆盖默认网关地址。
 
 ## 配置项（环境变量）
 
 | 变量 | 默认 | 说明 |
 | --- | --- | --- |
-| `TRAE_CN_PORT` | `39303` | 国内端点端口 |
-| `TRAE_AI_PORT` | `39304` | 国际端点端口 |
+| `TRAE_PROXY_PORT` | `39310` | 统一网关端口 |
+| `TRAE_PROXY_HOST` | `127.0.0.1` | 监听地址 |
+| `TRAE_PROXY_USAGE_KEEP_DAYS` | `90` | 用量明细保留天数 |
 
-## 安全模型
+## 安全与存储
 
-- 仅监听 `127.0.0.1`，四重回环校验：Host、Origin、`Content-Type: application/json`、bearer 常量时间比对。
-- `keys/*.key` 首次启动随机生成（建议 0600），`keys/`、`logs/` 均已在 `.gitignore` 排除，**仓库不含任何凭据**。
-- 请求体上限 64 MB；上游错误映射为 401/402/429/502/503 等状态码。
-- 登录态只在本机解密与刷新，不写回、不落地、不联网外传至除 Trae 官方网关外的任何地址。
-
-## 目录结构
-
-```
-trae-proxy/
-  add-bom.cjs              给 .ps1 补 UTF-8 BOM（PowerShell 5.1 中文兼容）
-  keys/                    运行时生成的持久 bearer key（.gitignore 排除）
-  logs/                    运行日志与 pid（.gitignore 排除）
-  scripts/
-    start.ps1 / stop.ps1 / status.ps1
-    install-autostart.ps1 / uninstall-autostart.ps1
-    inject-config.cjs      把两个 provider 注入 opencode.jsonc（自动备份，路径相对推导）
-    probe.cjs / probe-chat.cjs / list-ids.cjs   本机联调脚本（可选）
-  src/
-    serve.ts               守护入口（cn / ai 双区域）
-    shim.ts                OpenAI 兼容回环端点（鉴权 + SSE 透传）
-    auth.ts                只读桌面端登录态、内存内 token 刷新（本项目重写）
-    catalog.ts             模型目录（静态 fallback + SOLO 刷新）
-    solo.ts / solo-bridge.ts   SOLO 上游客户端与 SSE 协议桥接
-    decrypt.ts / identity.ts / paths.ts / region.ts / refresh.ts /
-    protocol.ts / reasoning.ts / sse.ts / upstream.ts
-```
+- 默认仅监听 `127.0.0.1`；
+- 管理台需要管理员登录；会话 token 只存哈希，24 小时过期；
+- 网关 API key 只展示一次，数据库只存 sha256 哈希，可随时吊销；
+- `config/`（SQLite）目录权限 `0700`、文件 `0600`，已被 `.gitignore` 排除；
+- Trae 登录态只在本机解密与刷新，不写回、不落地、不外传。
 
 ## 排错
 
 | 现象 | 处理 |
 | --- | --- |
-| `status` 显示未登录 / 503 `unconfigured` | 先在对应区域登录 Trae / TRAE SOLO CN；确认上表中的 `storage.json` 存在 |
-| 国际区域不可用 | 国际版需登录国际版 Trae；未登录时该区域仅返回内置 fallback，属正常 |
-| 端口未监听 | 看 `logs\proxy.err.log`；确认 Node 为 22.19+/24+ |
-| 某模型报 400 / not_found | 该模型须经由列出它的 directory function 调用；只用 `/v1/models` 返回的 id |
-| opencode 里看不到新模型 | 重启 opencode；再确认 `inject-config.cjs` 注入成功 |
-| `.ps1` 中文乱码 | 跑 `node add-bom.cjs` 补 BOM |
+| `healthz` 返回但模型列表为空 | 确认 Trae 桌面端已登录；在 Providers 页点「刷新模型」 |
+| `401` | 使用管理台创建的 API key，不要再用 `keys/*.key` |
+| `403` | 该 key 的可访问 provider 前缀不包含目标 provider |
+| `404` 模型未知 | 模型 id 必须带前缀，如 `trae-cn/glm-5.3` |
+| 修改 provider 后不生效 | 保存后网关会自动热替换；确认该 provider 处于启用状态 |
+| 前端空白 | 先 `npm run build`，再访问 `http://127.0.0.1:39310/` |
 
-## 免责声明
+## 目录结构
 
-本项目仅用于学习研究与在本机复用自己已登录的合法账号，请遵守 Trae 服务条款与当地法律法规。
-使用者自行承担使用风险。
-
-## 许可
-
-MIT。原始版权归 dingminhua（LaoDing）等项目作者所有，详见 `LICENSE`、`THIRD_PARTY_NOTICES.md`
-及源码文件头部注释。
+```
+trae-proxy/
+  config/                  SQLite 数据库（.gitignore 排除）
+  keys/                    旧版遗留的本地 bearer key（不再使用，可删除）
+  logs/                    运行日志与 pid（.gitignore 排除）
+  scripts/
+    inject-config.cjs      把统一网关注入 opencode.jsonc
+    start.ps1 / stop.ps1 / status.ps1   Windows 运维脚本
+  src/
+    serve.ts               统一网关入口（默认 39310）
+    gateway/               统一网关：store / auth / server / providers / factory
+    auth.ts / refresh.ts   Trae 登录态解密与 token 刷新
+    catalog.ts / solo.ts / solo-bridge.ts   Trae 上游客户端与协议桥接
+    decrypt.ts / identity.ts / paths.ts / region.ts /
+    protocol.ts / reasoning.ts / sse.ts / upstream.ts
+  web/
+    src/                   React 配置台
+    dist/                  构建产物（由网关托管）
+```
