@@ -13,11 +13,11 @@ import { api, type ApiKey, type Provider, type UsageResponse } from './api.ts'
 type View = 'overview' | 'providers' | 'keys' | 'usage' | 'provider-detail' | 'settings'
 
 const VIEWS: Array<{ id: View; label: string }> = [
-  { id: 'overview', label: '概览' },
-  { id: 'providers', label: '渠道' },
+  { id: 'overview', label: '控制台' },
+  { id: 'providers', label: '渠道模型' },
   { id: 'keys', label: 'API Keys' },
-  { id: 'usage', label: '用量' },
-  { id: 'settings', label: '设置' },
+  { id: 'usage', label: '用量统计' },
+  { id: 'settings', label: '系统设置' },
 ]
 
 function viewFromPath(): View {
@@ -83,6 +83,18 @@ function formatNumber(value: number): string {
   return new Intl.NumberFormat('zh-CN').format(value)
 }
 
+/** 大数 Token 显示：不足 1 万显示原值，1 万以上以「万」为单位，1 亿以上以「亿」为单位。 */
+function formatToken(value: number): string {
+  const abs = Math.abs(value)
+  if (abs >= 100_000_000) {
+    return `${(value / 100_000_000).toFixed(2).replace(/\.?0+$/, '')} 亿`
+  }
+  if (abs >= 10_000) {
+    return `${(value / 10_000).toFixed(2).replace(/\.?0+$/, '')} 万`
+  }
+  return formatNumber(value)
+}
+
 function formatMs(value: number): string {
   if (value < 1000) return `${Math.round(value)} ms`
   return `${(value / 1000).toFixed(1)} s`
@@ -114,6 +126,57 @@ function Field({
       {children}
     </label>
   )
+}
+
+/**
+ * 渠道启停滑块。
+ *
+ * 开启状态下显示「启用」，关闭状态下显示「停用」，可直接点击切换。
+ */
+function ProviderToggle({
+  enabled,
+  onChange,
+  disabled,
+}: {
+  enabled: boolean
+  onChange: (next: boolean) => void
+  disabled?: boolean
+}) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={enabled}
+      className={`switch${enabled ? ' on' : ''}`}
+      onClick={() => onChange(!enabled)}
+      disabled={disabled}
+    >
+      <span className="switch-track" aria-hidden="true">
+        <span className="switch-thumb" />
+      </span>
+      <span className="switch-label">{enabled ? '启用' : '停用'}</span>
+    </button>
+  )
+}
+
+/**
+ * 构造仅更新启停状态的渠道保存参数。
+ *
+ * 后端保存接口需要 type/name/models 等完整字段，切换开关时保留
+ * 列表里已有的渠道配置，只覆盖 enabled。
+ */
+function providerEnabledPatch(provider: Provider, enabled: boolean): Parameters<typeof api.saveProvider>[0] {
+  return {
+    id: provider.id,
+    type: provider.type,
+    name: provider.name,
+    enabled,
+    ...(provider.baseUrl === undefined ? {} : { baseUrl: provider.baseUrl }),
+    ...(provider.timeoutMs === undefined ? {} : { timeoutMs: provider.timeoutMs }),
+    extraHeaders: provider.extraHeaders,
+    models: provider.models,
+    settings: provider.settings,
+  }
 }
 
 function Spinner({ label }: { label: string }) {
@@ -235,7 +298,7 @@ function Overview({ providers, usage }: { providers: Provider[]; usage: UsageRes
     { label: '启用渠道', value: `${enabled.length}/${providers.length}` },
     { label: '已配置模型', value: formatNumber(totalModels) },
     { label: '累计请求', value: usage === undefined ? '-' : formatNumber(usage.summary.requests) },
-    { label: '累计 Token', value: usage === undefined ? '-' : formatNumber(usage.summary.totalTokens) },
+    { label: '累计 Token', value: usage === undefined ? '-' : formatToken(usage.summary.totalTokens) },
   ]
   return (
     <section>
@@ -288,6 +351,24 @@ function ChannelsView({ onOpenDetail }: { onOpenDetail: (id: string) => void }) 
   const [creating, setCreating] = useState(false)
   const [actionError, setActionError] = useState<string | undefined>(undefined)
   const [refreshResult, setRefreshResult] = useState<Record<string, string>>({})
+  const [toggling, setToggling] = useState<Record<string, boolean>>({})
+
+  const setEnabled = async (provider: Provider, enabled: boolean): Promise<void> => {
+    setActionError(undefined)
+    setToggling(current => ({ ...current, [provider.id]: true }))
+    try {
+      await api.saveProvider(providerEnabledPatch(provider, enabled))
+      reload()
+    } catch (reason) {
+      setActionError(reason instanceof Error ? reason.message : String(reason))
+    } finally {
+      setToggling(current => {
+        const next = { ...current }
+        delete next[provider.id]
+        return next
+      })
+    }
+  }
 
   const refresh = async (id: string): Promise<void> => {
     setActionError(undefined)
@@ -337,7 +418,6 @@ function ChannelsView({ onOpenDetail }: { onOpenDetail: (id: string) => void }) 
             <table>
               <thead>
                 <tr>
-                  <th>ID</th>
                   <th>名称</th>
                   <th>类型</th>
                   <th>状态</th>
@@ -353,7 +433,13 @@ function ChannelsView({ onOpenDetail }: { onOpenDetail: (id: string) => void }) 
                       <div className="cell-sub mono">{provider.id}</div>
                     </td>
                     <td>{TYPE_LABEL[provider.type]}</td>
-                    <td>{provider.enabled ? <span className="badge success">启用</span> : <span className="badge">停用</span>}</td>
+                    <td>
+                      <ProviderToggle
+                        enabled={provider.enabled}
+                        disabled={toggling[provider.id] === true}
+                        onChange={next => { void setEnabled(provider, next) }}
+                      />
+                    </td>
                     <td>
                       {provider.modelCount !== undefined
                         ? `${provider.modelCount}${provider.models.length > 0 ? ` / 映射 ${provider.models.length}` : ''}`
@@ -566,10 +652,7 @@ function ChannelForm({
                 </select>
               </Field>
               <Field label="状态">
-                <select value={enabled ? '1' : '0'} onChange={event => setEnabled(event.target.value === '1')}>
-                  <option value="1">启用</option>
-                  <option value="0">停用</option>
-                </select>
+                <ProviderToggle enabled={enabled} onChange={setEnabled} />
               </Field>
               {(type === 'openai' || type === 'anthropic' || type === 'gemini' || type === 'ollama') && (
                 <>
@@ -669,6 +752,22 @@ function ChannelDetail({ id, onBack, onDeleted }: {
   const [actionError, setActionError] = useState<string | undefined>(undefined)
   const [testing, setTesting] = useState(false)
   const [testResult, setTestResult] = useState<string | undefined>(undefined)
+  const [toggling, setToggling] = useState(false)
+
+  const setEnabled = async (enabled: boolean): Promise<void> => {
+    if (provider === undefined) return
+    setActionError(undefined)
+    setTestResult(undefined)
+    setToggling(true)
+    try {
+      await api.saveProvider(providerEnabledPatch(provider, enabled))
+      reload()
+    } catch (reason) {
+      setActionError(reason instanceof Error ? reason.message : String(reason))
+    } finally {
+      setToggling(false)
+    }
+  }
 
   const refresh = async (): Promise<void> => {
     setActionError(undefined)
@@ -728,6 +827,11 @@ function ChannelDetail({ id, onBack, onDeleted }: {
         <div className="row-actions">
           {provider !== undefined && (
             <>
+              <ProviderToggle
+                enabled={provider.enabled}
+                disabled={toggling}
+                onChange={next => { void setEnabled(next) }}
+              />
               <button className="secondary compact" onClick={() => { void test() }} disabled={testing}>
                 {testing ? '检测中...' : '检测连通性'}
               </button>
@@ -1087,7 +1191,7 @@ function KeysView() {
               <thead>
                 <tr>
                   <th>名称</th>
-                  <th>前缀</th>
+                  <th>密钥</th>
                   <th>可访问</th>
                   <th>创建时间</th>
                   <th>状态</th>
@@ -1098,21 +1202,23 @@ function KeysView() {
                 {data.data.map(key => (
                   <tr key={key.id}>
                     <td>{key.name}</td>
-                    <td><span className="mono">{key.keyPrefix}...</span></td>
+                    <td>
+                      <span className="mono">{key.keyPrefix}...</span>
+                      <button
+                        type="button"
+                        className="text-button"
+                        disabled={!key.plaintextStored}
+                        title={key.plaintextStored ? '复制密钥明文' : '旧版密钥未保留明文'}
+                        onClick={() => { void copyKey(key) }}
+                      >
+                        {copiedKey === key.id ? '已复制' : '复制'}
+                      </button>
+                    </td>
                     <td>{permissionLabel(key.modelPrefixes, key.modelIds)}</td>
                     <td>{formatDate(key.createdAt)}</td>
                     <td>{key.revokedAt === undefined ? <span className="badge success">有效</span> : <span className="badge">已吊销</span>}</td>
                     <td>
                       <div className="row-actions">
-                        <button
-                          type="button"
-                          className="text-button"
-                          disabled={!key.plaintextStored}
-                          title={key.plaintextStored ? '复制密钥明文' : '旧版密钥未保留明文'}
-                          onClick={() => { void copyKey(key) }}
-                        >
-                          {copiedKey === key.id ? '已复制' : '复制'}
-                        </button>
                         <button className="text-button" onClick={() => setModal({ mode: 'edit', key })}>编辑</button>
                         <button
                           type="button"
@@ -1167,7 +1273,7 @@ function KeysView() {
             disabled={busyKey === menuKey.id || !menuKey.plaintextStored}
             onClick={() => { void fillCcSwitch(menuKey) }}
           >
-            {busyKey === menuKey.id ? '填充中...' : '填充到 CC-switch'}
+            {busyKey === menuKey.id ? '唤起中...' : '填充到 CC-switch'}
           </button>
         </div>,
         document.body,
@@ -1178,6 +1284,8 @@ function KeysView() {
 
 function UsageView() {
   const [range, setRange] = useState<'today' | '7d' | '30d' | 'all'>('7d')
+  const [page, setPage] = useState(1)
+  const PAGE_SIZE = 10
   const rangeParams = useMemo(() => {
     const now = Date.now()
     const day = 24 * 60 * 60 * 1000
@@ -1190,8 +1298,14 @@ function UsageView() {
     if (range === '30d') return { from: now - 30 * day }
     return {}
   }, [range])
-  const { data, error, loading, reload } = useAsync(() => api.usage(rangeParams), [rangeParams])
+  const { data, error, loading, reload } = useAsync(
+    () => api.usage(rangeParams, { limit: PAGE_SIZE, offset: (page - 1) * PAGE_SIZE }),
+    [rangeParams, page],
+  )
   const summary = useMemo(() => data?.summary, [data])
+  const recent = data?.recent
+  const totalPages = recent === undefined || recent.total === 0 ? 0 : Math.max(1, Math.ceil(recent.total / PAGE_SIZE))
+  const currentPage = Math.min(page, Math.max(1, totalPages))
   const successRate = summary === undefined || summary.requests === 0
     ? '-'
     : `${((summary.success / summary.requests) * 100).toFixed(1)}%`
@@ -1227,7 +1341,7 @@ function UsageView() {
             </div>
             <div className="stat-card">
               <span className="stat-label">Token</span>
-              <span className="stat-value">{formatNumber(summary?.totalTokens ?? 0)}</span>
+              <span className="stat-value">{formatToken(summary?.totalTokens ?? 0)}</span>
             </div>
             <div className="stat-card">
               <span className="stat-label">平均耗时</span>
@@ -1252,13 +1366,48 @@ function UsageView() {
                         <div
                           className="bar-fill"
                           style={{ height: `${Math.max(4, (item.totalTokens / max) * 100)}%` }}
-                          title={`${item.day}: ${formatNumber(item.totalTokens)} tokens`}
+                          title={`${item.day}: ${formatToken(item.totalTokens)} tokens`}
                         />
                       </div>
                       <span className="bar-label">{item.day.slice(5)}</span>
                     </div>
                   )
                 })}
+              </div>
+            )}
+          </div>
+          <div className="panel">
+            <div className="panel-head">
+              <h2>模型用量</h2>
+            </div>
+            {data.byModel.length === 0 ? (
+              <div className="empty">暂无数据</div>
+            ) : (
+              <div className="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>模型</th>
+                      <th>请求</th>
+                      <th>成功率</th>
+                      <th>Token</th>
+                      <th>输入 Token</th>
+                      <th>输出 Token</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {data.byModel.map(item => (
+                      <tr key={item.key ?? '-'}>
+                        <td><span className="mono">{item.key ?? '-'}</span></td>
+                        <td>{formatNumber(item.requests)}</td>
+                        <td>{item.requests === 0 ? '-' : `${((item.success / item.requests) * 100).toFixed(1)}%`}</td>
+                        <td>{formatToken(item.totalTokens)}</td>
+                        <td>{formatToken(item.requestTokens)}</td>
+                        <td>{formatToken(item.responseTokens)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
               </div>
             )}
           </div>
@@ -1280,7 +1429,7 @@ function UsageView() {
                   </tr>
                 </thead>
                 <tbody>
-                  {data.recent.map(row => (
+                  {(recent?.rows ?? []).map(row => (
                     <tr key={row.id}>
                       <td>{formatDate(row.ts)}</td>
                       <td><span className="mono">{row.model ?? '-'}</span></td>
@@ -1289,13 +1438,34 @@ function UsageView() {
                           {row.status}
                         </span>
                       </td>
-                      <td>{formatNumber(row.totalTokens)}</td>
+                      <td>{formatToken(row.totalTokens)}</td>
                       <td>{formatMs(row.durationMs)}</td>
                       <td>{row.streamed === 1 ? '是' : '否'}</td>
                     </tr>
                   ))}
                 </tbody>
               </table>
+            </div>
+            <div className="pagination">
+              <button
+                className="secondary"
+                disabled={page <= 1}
+                onClick={() => setPage(value => value - 1)}
+              >
+                上一页
+              </button>
+              <span className="pagination-info">
+                {recent !== undefined && recent.total > 0
+                  ? `第 ${currentPage} / ${totalPages} 页 · 共 ${formatNumber(recent.total)} 条`
+                  : '暂无记录'}
+              </span>
+              <button
+                className="secondary"
+                disabled={page >= totalPages}
+                onClick={() => setPage(value => value + 1)}
+              >
+                下一页
+              </button>
             </div>
           </div>
         </>

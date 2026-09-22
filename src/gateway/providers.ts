@@ -22,6 +22,17 @@ export interface ChatRequestMeta {
   providerId: string
 }
 
+/**
+ * 单次上游对话的附加上下文。
+ *
+ * `sessionId` 用于需要会话粘性的上游（例如 opencode.ai 的
+ * `x-opencode-session`），网关从入站请求推导后透传，保证同一会话
+ * 的请求落在同一条路由上并命中 prompt 缓存。
+ */
+export interface ChatRequestContext {
+  sessionId?: string
+}
+
 export interface GatewayChatResult {
   ok: true
   response: Response
@@ -39,7 +50,11 @@ export type GatewayChatFailure = {
 export interface UpstreamProvider {
   readonly id: string
   listModels(): Promise<GatewayModel[]>
-  chat(bodyJson: string, signal?: AbortSignal): Promise<GatewayChatResult | GatewayChatFailure>
+  chat(
+    bodyJson: string,
+    signal?: AbortSignal,
+    context?: ChatRequestContext,
+  ): Promise<GatewayChatResult | GatewayChatFailure>
   /** 可选：返回面向管理台的运行状态（Trae 登录态等）。 */
   status?(): Promise<unknown>
 }
@@ -104,13 +119,18 @@ export class ProviderRegistry {
     return result
   }
 
-  async chat(providerId: string, bodyJson: string, signal?: AbortSignal): Promise<GatewayChatResult | GatewayChatFailure> {
+  async chat(
+    providerId: string,
+    bodyJson: string,
+    signal?: AbortSignal,
+    context?: ChatRequestContext,
+  ): Promise<GatewayChatResult | GatewayChatFailure> {
     const provider = this.providers.get(providerId)
     if (provider === undefined) {
       return { ok: false, status: 404, kind: 'not_found', message: `unknown provider: ${providerId}` }
     }
     try {
-      return await provider.chat(bodyJson, signal)
+      return await provider.chat(bodyJson, signal, context)
     } catch (error: unknown) {
       this.logger?.('provider chat failed', { providerId, error: String(error) })
       return {

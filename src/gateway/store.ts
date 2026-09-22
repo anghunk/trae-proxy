@@ -620,15 +620,17 @@ export class GatewayStore {
     }
   }
 
-  /** 最近用量事件（管理台最近请求表）。 */
-  recentUsage(limit: number = 50): UsageEventRecord[] {
+  /** 最近用量事件（管理台最近请求表，分页；options.total 传 true 时同时返回总条数）。 */
+  recentUsage(options: { limit?: number; offset?: number; total?: boolean } = {}): { rows: UsageEventRecord[]; total: number } {
+    const limit = options.limit ?? 20
+    const offset = options.offset ?? 0
     const rows = this.db
       .prepare(
         `SELECT id, ts, api_key_id, provider_id, model, request_tokens, response_tokens,
                 total_tokens, status, duration_ms, streamed
-         FROM usage_events ORDER BY ts DESC, id DESC LIMIT ?`,
+         FROM usage_events ORDER BY ts DESC, id DESC LIMIT ? OFFSET ?`,
       )
-      .all(limit) as {
+      .all(limit, offset) as {
       id: number
       ts: number
       api_key_id: string | null
@@ -641,7 +643,7 @@ export class GatewayStore {
       duration_ms: number
       streamed: number
     }[]
-    return rows.map(row => ({
+    const mapped: UsageEventRecord[] = rows.map(row => ({
       id: row.id,
       ts: row.ts,
       ...(row.api_key_id === null ? {} : { apiKeyId: row.api_key_id }),
@@ -654,6 +656,9 @@ export class GatewayStore {
       durationMs: row.duration_ms,
       streamed: row.streamed,
     }))
+    if (!options.total) return { rows: mapped, total: 0 }
+    const total = this.db.prepare('SELECT COUNT(*) AS n FROM usage_events').get() as { n: number }
+    return { rows: mapped, total: Number(total.n) }
   }
 
   /** 按 provider/model/api key 汇总（管理台图表）。 */

@@ -3,7 +3,13 @@
  * 支持流式 SSE 透传，不解析内容，只记录可选 usage。
  */
 
-import type { GatewayChatFailure, GatewayChatResult, GatewayModel, UpstreamProvider } from '../providers.ts'
+import type {
+  ChatRequestContext,
+  GatewayChatFailure,
+  GatewayChatResult,
+  GatewayModel,
+  UpstreamProvider,
+} from '../providers.ts'
 import type { ProviderRecord } from '../store.ts'
 import { modelFromOpenAI } from '../providers.ts'
 
@@ -32,6 +38,22 @@ function baseUrl(record: ProviderRecord): string {
   return (record.baseUrl ?? 'https://api.openai.com/v1').replace(/\/$/, '')
 }
 
+/**
+ * 上游要求“稳定会话头”时返回对应请求头名。
+ *
+ * opencode.ai 用 `x-opencode-session` 做请求路由与 prompt 缓存，
+ * 缺失会直接返回 400 MissingSessionID，因此对它的主机自动带上。
+ */
+function sessionHeaderName(record: ProviderRecord): string | undefined {
+  try {
+    const host = new URL(baseUrl(record)).hostname.toLowerCase()
+    if (host === 'opencode.ai' || host.endsWith('.opencode.ai')) return 'x-opencode-session'
+  } catch {
+    // base_url 非法时交给 fetch 报错，这里不额外处理
+  }
+  return undefined
+}
+
 export class OpenAiCompatibleProvider implements UpstreamProvider {
   readonly id: string
   private readonly record: ProviderRecord
@@ -57,9 +79,17 @@ export class OpenAiCompatibleProvider implements UpstreamProvider {
     return models
   }
 
-  async chat(bodyJson: string, signal?: AbortSignal): Promise<GatewayChatResult | GatewayChatFailure> {
+  async chat(
+    bodyJson: string,
+    signal?: AbortSignal,
+    context?: ChatRequestContext,
+  ): Promise<GatewayChatResult | GatewayChatFailure> {
     const headers = mergeHeaders(this.record)
     headers['Content-Type'] = 'application/json'
+    const sessionHeader = sessionHeaderName(this.record)
+    if (sessionHeader !== undefined && context?.sessionId !== undefined && context.sessionId !== '') {
+      headers[sessionHeader] = context.sessionId
+    }
     let response: Response
     try {
       response = await fetch(`${baseUrl(this.record)}/chat/completions`, {

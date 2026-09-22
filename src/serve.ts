@@ -3,7 +3,7 @@
  *
  * 默认在 127.0.0.1:39310 启动统一 OpenAI 兼容网关 + React 配置台：
  * - 首次启动自动初始化 SQLite（config/trae-proxy.db）并注册默认 Trae providers；
- * - 定时刷新各 provider 模型目录、清理过期会话与用量；
+ * - 定时刷新各 provider 模型目录、清理过期会话；用量明细永久保留；
  * - 管理台保存配置后立即热生效。
  *
  * 仅依赖 Node 内置能力，TypeScript 由 Node 22.19+/24 的类型擦除直接运行。
@@ -17,7 +17,6 @@ import { CONFIG_DIR, DEFAULT_DB_PATH, openGatewayStore, type ProviderRecord } fr
 
 const PORT = Number(process.env['TRAE_PROXY_PORT'] ?? 39310)
 const HOST = process.env['TRAE_PROXY_HOST'] ?? '127.0.0.1'
-const USAGE_KEEP_DAYS = Number(process.env['TRAE_PROXY_USAGE_KEEP_DAYS'] ?? 90)
 
 function ts(): string {
   return new Date().toISOString()
@@ -100,8 +99,6 @@ async function main(): Promise<void> {
   const cleanupTimer = setInterval(() => {
     const now = Date.now()
     store.deleteExpiredSessions(now)
-    const pruned = store.pruneUsage(now - USAGE_KEEP_DAYS * 24 * 60 * 60 * 1000)
-    if (pruned > 0) logger.info(`用量清理完成，删除 ${pruned} 条`)
   }, 60 * 60 * 1000)
   cleanupTimer.unref()
 

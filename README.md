@@ -73,8 +73,8 @@ curl -H "Authorization: Bearer tr-xxxxxxxx" http://127.0.0.1:39310/v1/models
 
 - **概览**：provider 启用状态、模型数、累计请求与 Token；
 - **Providers**：新增/编辑/停用/删除 provider；保存后立即热生效；Trae 类型无需 API Key；
-- **API Keys**：创建、复制、吊销、删除网关 key，可限制可访问的 provider；列表中的“配置”可将 key 一键填充到 CC Switch；
-- **用量**：按今天 / 7 天 / 30 天 / 全部查看汇总、按天图表、按 provider/key/model 分布、最近请求。
+- **API Keys**：创建、复制、吊销、删除网关 key，可限制可访问的 provider；列表中的“配置”会唤起 CC Switch 官方导入确认弹窗，确认后将 key 与模型导入到 CC Switch；
+- **用量**：按今天 / 7 天 / 30 天 / 全部查看汇总、按天图表、按模型统计单独用量、最近请求分页浏览（默认每页 20 条）。
 
 支持的 provider 类型：
 
@@ -107,7 +107,6 @@ TRAE_PROXY_KEY=tr-xxxxxxxx node scripts/inject-config.cjs
 | --- | --- | --- |
 | `TRAE_PROXY_PORT` | `39310` | 统一网关端口 |
 | `TRAE_PROXY_HOST` | `127.0.0.1` | 监听地址 |
-| `TRAE_PROXY_USAGE_KEEP_DAYS` | `90` | 用量明细保留天数 |
 
 ## 安全与存储
 

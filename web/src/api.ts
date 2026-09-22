@@ -61,7 +61,7 @@ export interface UsageRow {
 
 export interface UsageResponse {
   summary: UsageSummary
-  recent: UsageRow[]
+  recent: { rows: UsageRow[]; total: number }
   byDay: Array<{ day: string; requests: number; success: number; totalTokens: number }>
   byProvider: Array<{ key: string | null; requests: number; success: number; requestTokens: number; responseTokens: number; totalTokens: number }>
   byKey: Array<{ key: string | null; requests: number; success: number; requestTokens: number; responseTokens: number; totalTokens: number }>
@@ -79,10 +79,8 @@ export interface GatewaySettings {
 export interface CcSwitchFillResult {
   ok: boolean
   instruction: string
-  providerId?: string
   modelCount?: number
   models?: string[]
-  backupPath?: string
 }
 
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
@@ -146,10 +144,15 @@ export const api = {
     }),
   deleteApiKey: (id: string) =>
     request<{ ok: boolean }>(`/api/api-keys/${encodeURIComponent(id)}`, { method: 'DELETE' }),
-  usage: (range: { from?: number; to?: number } = {}) => {
+  usage: (range: { from?: number; to?: number } = {}, recent: { limit?: number; offset?: number } = {}) => {
     const params = new URLSearchParams()
     if (range.from !== undefined) params.set('from', String(range.from))
     if (range.to !== undefined) params.set('to', String(range.to))
+    if (recent.limit !== undefined) {
+      params.set('recent', '1')
+      params.set('recentLimit', String(recent.limit))
+    }
+    if (recent.offset !== undefined) params.set('recentOffset', String(recent.offset))
     const query = params.toString()
     return request<UsageResponse>(`/api/usage${query === '' ? '' : `?${query}`}`)
   },

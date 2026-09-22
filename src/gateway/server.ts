@@ -12,12 +12,11 @@
 
 import { createServer, ServerResponse, type IncomingMessage, type Server } from 'node:http'
 import type { Socket } from 'node:net'
-import { copyFile, readFile, stat } from 'node:fs/promises'
-import { homedir } from 'node:os'
+import { createHash } from 'node:crypto'
+import { readFile, stat } from 'node:fs/promises'
 import { dirname, join, resolve, sep } from 'node:path'
 import { Readable } from 'node:stream'
 import { fileURLToPath } from 'node:url'
-import { DatabaseSync } from 'node:sqlite'
 import {
   authenticateApiKey,
   authenticateSession,
@@ -37,9 +36,6 @@ export const DEFAULT_WEB_DIST = join(ROOT, 'web', 'dist')
 
 const BODY_LIMIT = 64 * 1024 * 1024
 const SESSION_COOKIE = 'trae_proxy_session'
-const CC_SWITCH_DIR = join(homedir(), '.cc-switch')
-const CC_SWITCH_DB_PATH = join(CC_SWITCH_DIR, 'cc-switch.db')
-const CC_SWITCH_PROVIDER_ID = 'trae-proxy-gateway'
 const CC_SWITCH_PROVIDER_NAME = 'Trae Proxy 统一网关'
 const STATUS_BY_KIND: Record<string, number> = {
   authentication: 401,
@@ -263,126 +259,92 @@ function sanitizeApiKey(record: {
   }
 }
 
-interface CcSwitchImportResult {
-  providerId: string
+interface CcSwitchPreview {
+  providerName: string
+  baseUrl: string
   models: string[]
-  backupPath?: string
+  deeplink: string
 }
 
 /**
- * 将网关渠道写入 cc-switch 的 Codex provider。
+ * 构造导入 cc-switch 的官方深链及展示信息。
  *
- * cc-switch 的深链协议只能解析一个默认 model，无法携带模型目录；这里按
- * cc-switch 3.20.x 的 provider 表结构直接写入完整 modelCatalog。写入前
- * 备份数据库，并在同一事务中新增或更新渠道，避免半写入状态；不会改变
- * 用户当前选择的渠道，切换仍由 cc-switch 自己完成。
+ * 深链使用 CC Switch 官方 `ccswitch://v1/import` 协议，由 CC Switch 自己弹出
+ * 导入确认对话框；网关只负责唤起，不直接修改 cc-switch 数据库。官方深链目前
+ * 只能携带一个默认 model，完整模型目录通过 Base64 config 传给 CC Switch 合并，
+ * 导入后仍以网关目录为准。Codex 深链导入时 CC Switch 官方会固定生成
+ * `wire_api = "responses"`，这里仍按网关实际能力写入 `chat` 供确认框预览。
  *
- * @param options 网关地址、API key、完整网关模型 id 列表及展示名称。
- * @returns 写入的 provider id、模型列表和备份文件路径。
- * @throws 当 cc-switch 数据库不存在、被锁定或表结构不兼容时抛出错误。
+ * @param options 网关地址、API key 及完整网关模型 id 列表。
  */
-export async function importCcSwitchProvider(options: {
+function buildCcSwitchPreview(options: {
   baseUrl: string
   apiKey: string
   models: string[]
-}): Promise<CcSwitchImportResult> {
+}): CcSwitchPreview {
   const models = [...new Set(options.models.filter(model => model.trim() !== ''))]
   const defaultModel = models[0] ?? 'gpt-4o-mini'
-  const now = Date.now()
-  const stamp = new Date(now).toISOString().replace(/[:.]/g, '-')
-  const backupPath = join(CC_SWITCH_DIR, 'backups', `db_backup_trae_proxy_${stamp}.db`)
-  try {
-    await stat(CC_SWITCH_DB_PATH)
-  } catch {
-    throw new Error(`未找到 cc-switch 数据库：${CC_SWITCH_DB_PATH}`)
-  }
-  await copyFile(CC_SWITCH_DB_PATH, backupPath)
-
-  const config = [
-    'model_provider = "custom"',
-    `model = ${JSON.stringify(defaultModel)}`,
-    'model_catalog_json = "cc-switch-model-catalog.json"',
-    '',
-    '[model_providers.custom]',
-    `name = ${JSON.stringify(CC_SWITCH_PROVIDER_NAME)}`,
-    `base_url = ${JSON.stringify(`${options.baseUrl}/v1`)}`,
-    'wire_api = "responses"',
-    'requires_openai_auth = true',
-    '',
-  ].join('\n')
-  const settingsConfig = JSON.stringify({
+  const endpoint = `${options.baseUrl}/v1`
+  const config = JSON.stringify({
     auth: { OPENAI_API_KEY: options.apiKey },
-    config,
+    config: [
+      'model_provider = "custom"',
+      `model = ${JSON.stringify(defaultModel)}`,
+      'model_catalog_json = "cc-switch-model-catalog.json"',
+      '',
+      '[model_providers.custom]',
+      `name = ${JSON.stringify(CC_SWITCH_PROVIDER_NAME)}`,
+      `base_url = ${JSON.stringify(endpoint)}`,
+      'wire_api = "chat"',
+      'requires_openai_auth = true',
+      '',
+    ].join('\n'),
     modelCatalog: {
       models: models.map(model => ({ model, displayName: model })),
     },
   })
-
-  const db = new DatabaseSync(CC_SWITCH_DB_PATH)
-  try {
-    db.exec('PRAGMA busy_timeout = 5000')
-    const columns = db.prepare('PRAGMA table_info(providers)').all() as Array<{ name: string }>
-    const names = new Set(columns.map(column => column.name))
-    const required = [
-      'id',
-      'app_type',
-      'name',
-      'settings_config',
-      'website_url',
-      'category',
-      'created_at',
-      'sort_index',
-      'meta',
-      'is_current',
-      'in_failover_queue',
-    ]
-    const missing = required.filter(name => !names.has(name))
-    if (missing.length > 0) {
-      throw new Error(`cc-switch 数据库版本不兼容，缺少字段：${missing.join(', ')}`)
-    }
-    const existing = db
-      .prepare('SELECT created_at, sort_index FROM providers WHERE id = ? AND app_type = ?')
-      .get(CC_SWITCH_PROVIDER_ID, 'codex') as { created_at: number | null; sort_index: number | null } | undefined
-    const nextSort = db
-      .prepare('SELECT COALESCE(MAX(sort_index), -1) + 1 AS value FROM providers WHERE app_type = ?')
-      .get('codex') as { value: number }
-
-    db.exec('BEGIN IMMEDIATE')
-    try {
-      db.prepare(`
-        INSERT INTO providers (
-          id, app_type, name, settings_config, website_url, category,
-          created_at, sort_index, meta, is_current, in_failover_queue
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(id, app_type) DO UPDATE SET
-          name = excluded.name,
-          settings_config = excluded.settings_config,
-          website_url = excluded.website_url,
-          category = excluded.category,
-          meta = excluded.meta,
-          in_failover_queue = excluded.in_failover_queue
-      `).run(
-        CC_SWITCH_PROVIDER_ID,
-        'codex',
-        CC_SWITCH_PROVIDER_NAME,
-        settingsConfig,
-        'http://127.0.0.1:39310',
-        'custom',
-        existing?.created_at ?? now,
-        existing?.sort_index ?? nextSort.value,
-        '{}',
-        0,
-        0,
-      )
-      db.exec('COMMIT')
-    } catch (error) {
-      db.exec('ROLLBACK')
-      throw error
-    }
-  } finally {
-    db.close()
+  const params = new URLSearchParams({
+    resource: 'provider',
+    app: 'codex',
+    name: CC_SWITCH_PROVIDER_NAME,
+    homepage: options.baseUrl,
+    endpoint,
+    apiKey: options.apiKey,
+    model: defaultModel,
+    config: Buffer.from(config, 'utf8').toString('base64'),
+    configFormat: 'json',
+  })
+  return {
+    providerName: CC_SWITCH_PROVIDER_NAME,
+    baseUrl: endpoint,
+    models,
+    deeplink: `ccswitch://v1/import?${params.toString()}`,
   }
-  return { providerId: CC_SWITCH_PROVIDER_ID, models, backupPath }
+}
+
+/**
+ * 用系统默认方式打开 cc-switch 官方导入深链，让 CC Switch 自行弹出确认弹窗。
+ *
+ * @param url `ccswitch://v1/import?...` 深链。
+ * @returns 启动命令的退出码；非 0 表示打开失败。
+ */
+export async function openCcSwitchImport(url: string): Promise<number> {
+  const { execFile } = await import('node:child_process')
+  const command = process.platform === 'darwin'
+    ? 'open'
+    : process.platform === 'win32'
+      ? 'cmd'
+      : 'xdg-open'
+  const args = process.platform === 'win32' ? ['/c', 'start', '', url] : [url]
+  return new Promise<number>((resolve, reject) => {
+    execFile(command, args, error => {
+      if (error === null) {
+        resolve(0)
+      } else {
+        reject(error)
+      }
+    })
+  })
 }
 
 const MIME: Record<string, string> = {
@@ -521,7 +483,61 @@ export function createGatewayServer(options: GatewayServerOptions): GatewayServe
     model: string
     stream: boolean
     body: Record<string, unknown>
+    /** 透传给需要会话粘性的上游（如 opencode.ai 的 x-opencode-session）。 */
+    sessionId?: string
     usage?: { requestTokens?: number; responseTokens?: number; totalTokens?: number }
+  }
+
+  /** 入站请求中可作为会话标识的请求头，按优先级排列。 */
+  const SESSION_HEADERS = [
+    'x-opencode-session',
+    'x-session-id',
+    'session_id',
+    'session-id',
+    'conversation_id',
+    'x-conversation-id',
+  ] as const
+
+  /**
+   * 从入站请求推导稳定的会话标识。
+   *
+   * 顺序为：显式会话请求头（Codex 会发 `x-session-id`）→ 请求体
+   * `prompt_cache_key` / `metadata` → 由指令与首条消息派生的稳定摘要。
+   * 兜底摘要保证同一会话重放同一 id，避免上游因缺少会话头直接 400。
+   */
+  function resolveSessionId(req: IncomingMessage, body: Record<string, unknown>): string {
+    for (const name of SESSION_HEADERS) {
+      const header = req.headers[name]
+      const value = Array.isArray(header) ? header[0] : header
+      if (typeof value === 'string' && value.trim() !== '') return value.trim()
+    }
+    const cacheKey = body['prompt_cache_key']
+    if (typeof cacheKey === 'string' && cacheKey.trim() !== '') return cacheKey.trim()
+    const metadata = body['metadata']
+    if (typeof metadata === 'object' && metadata !== null) {
+      const record = metadata as Record<string, unknown>
+      for (const key of ['session_id', 'sessionId', 'thread_id', 'threadId']) {
+        const value = record[key]
+        if (typeof value === 'string' && value.trim() !== '') return value.trim()
+      }
+    }
+    return `trae-proxy-${createHash('sha256').update(sessionSeed(body)).digest('hex').slice(0, 32)}`
+  }
+
+  /** 用指令 + 首条消息构造会话摘要的原始文本（截断，避免长上下文参与哈希）。 */
+  function sessionSeed(body: Record<string, unknown>): string {
+    const parts: string[] = []
+    const instructions = body['instructions']
+    if (typeof instructions === 'string') parts.push(instructions)
+    const messages = Array.isArray(body['messages']) ? body['messages'] : []
+    for (const message of messages.slice(0, 2)) {
+      if (typeof message === 'object' && message !== null) parts.push(JSON.stringify(message))
+    }
+    const input = Array.isArray(body['input']) ? body['input'] : []
+    for (const item of input.slice(0, 2)) {
+      if (typeof item === 'object' && item !== null) parts.push(JSON.stringify(item))
+    }
+    return parts.join('\n').slice(0, 4000)
   }
 
   /** 校验一次对话请求并解析 `<providerId>/<upstreamModelId>`。 */
@@ -594,7 +610,9 @@ export function createGatewayServer(options: GatewayServerOptions): GatewayServe
       })
     }
 
-    const result = await registry.chat(providerId, JSON.stringify(input.body), controller.signal)
+    const result = await registry.chat(providerId, JSON.stringify(input.body), controller.signal, {
+      sessionId: input.sessionId,
+    })
     if (!result.ok) {
       const status = result.status > 0 ? result.status : STATUS_BY_KIND[result.kind] ?? 502
       recordUsage(status)
@@ -965,6 +983,7 @@ export function createGatewayServer(options: GatewayServerOptions): GatewayServe
     const converted = responsesToChat(rawInput)
     converted['model'] = String(parsed.body['model'] ?? '')
     parsed.body = converted
+    parsed.sessionId = resolveSessionId(req, rawInput)
 
     if (!parsed.stream) {
       await runChatInternal(
@@ -1140,7 +1159,9 @@ export function createGatewayServer(options: GatewayServerOptions): GatewayServe
       })
     }
 
-    const result = await registry.chat(providerId, JSON.stringify(upstreamBody), controller.signal)
+    const result = await registry.chat(providerId, JSON.stringify(upstreamBody), controller.signal, {
+      sessionId: resolveSessionId(req, input),
+    })
     if (!result.ok) {
       const status = result.status > 0 ? result.status : STATUS_BY_KIND[result.kind] ?? 502
       recordUsage(status)
@@ -1508,18 +1529,13 @@ export function createGatewayServer(options: GatewayServerOptions): GatewayServe
         modelPrefixes: parseStringArray(key.modelPrefixes),
         modelIds: storedModelIds,
       })
-      const result = await importCcSwitchProvider({
-        baseUrl,
-        apiKey: key.key,
-        models: visibleModelIds,
-      })
+      const preview = buildCcSwitchPreview({ baseUrl, apiKey: key.key, models: visibleModelIds })
+      await openCcSwitchImport(preview.deeplink)
       writeJson(res, 200, {
         ok: true,
-        providerId: result.providerId,
-        modelCount: result.models.length,
-        models: result.models,
-        ...(result.backupPath === undefined ? {} : { backupPath: result.backupPath }),
-        instruction: `已写入 CC Switch，共 ${result.models.length} 个模型；请回到 CC Switch 切换该渠道，列表未刷新时请重开 CC Switch`,
+        modelCount: preview.models.length,
+        models: preview.models,
+        instruction: `已唤起 CC Switch，请在 CC Switch 弹出的确认对话框中确认导入，共 ${preview.models.length} 个模型`,
       })
       return
     }
@@ -1536,9 +1552,12 @@ export function createGatewayServer(options: GatewayServerOptions): GatewayServe
         ...(fromNum === undefined || !Number.isFinite(fromNum) ? {} : { from: fromNum }),
         ...(toNum === undefined || !Number.isFinite(toNum) ? {} : { to: toNum }),
       }
+      const recentParams = url.searchParams.get('recent') === '1'
+      const recentLimit = Math.min(Math.max(Number(url.searchParams.get('recentLimit') ?? 20), 1), 200)
+      const recentOffset = Math.max(Number(url.searchParams.get('recentOffset') ?? 0), 0)
       writeJson(res, 200, {
         summary: store.usageSummary({ ...range, ...(apiKeyId === undefined ? {} : { apiKeyId }), ...(providerId === undefined ? {} : { providerId }), ...(model === undefined ? {} : { model }) }),
-        recent: store.recentUsage(Number(url.searchParams.get('limit') ?? 50)),
+        recent: store.recentUsage({ limit: recentLimit, offset: recentOffset, total: recentParams }),
         byDay: store.usageByDay(range),
         byProvider: store.usageBreakdown('provider_id', range),
         byKey: store.usageBreakdown('api_key_id', range),
