@@ -4,6 +4,7 @@ import type { TraeIdentity } from './identity.ts'
 import { buildTraeCnHeaders, traeEndpoint } from './protocol.ts'
 import { REGION_GATEWAYS, regionOfCredential, type TraeRegion } from './region.ts'
 import { parseReasoningCapability, type TraeReasoningCapability } from './reasoning.ts'
+import { readableUpstreamError } from './gateway/providers.ts'
 import type { TraeChatResult, TraeUpstreamErrorKind } from './upstream.ts'
 
 export const TRAE_SOLO_FUNCTION = 'solo_work_lite'
@@ -255,14 +256,19 @@ export class TraeSoloUpstreamClient {
       return { ok: false, status: 0, kind: 'server', message: `transport error: ${String(error)}` }
     }
     if (response.ok) return { ok: true, response }
-    const text = (await response.text()).slice(0, 1024)
+    const text = await response.text()
     this.options.log?.('dsh-connect-trae: llm_utils_chat rejected', {
       status: response.status,
       model: JSON.parse(prepared)['model'],
       configName: JSON.parse(prepared)['config_name'],
       reasoningEffort: JSON.parse(prepared)['reasoning_effort'],
-      body: text,
+      body: text.slice(0, 2048),
     })
-    return { ok: false, status: response.status, kind: classify(response.status), message: text || `Trae SOLO returned HTTP ${response.status}` }
+    return {
+      ok: false,
+      status: response.status,
+      kind: classify(response.status),
+      message: readableUpstreamError(text, `Trae SOLO returned HTTP ${response.status}`),
+    }
   }
 }

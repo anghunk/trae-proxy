@@ -37,6 +37,8 @@ export const DEFAULT_WEB_DIST = join(ROOT, 'web', 'dist')
 const BODY_LIMIT = 64 * 1024 * 1024
 const SESSION_COOKIE = 'trae_proxy_session'
 const CC_SWITCH_PROVIDER_NAME = 'Trae Proxy 统一网关'
+const LOGIN_MAX_FAILURES = 5
+const LOGIN_LOCK_MS = 30_000
 const STATUS_BY_KIND: Record<string, number> = {
   authentication: 401,
   hard_credit: 402,
@@ -81,7 +83,14 @@ function writeJson(res: ServerResponse, status: number, body: unknown): void {
 }
 
 function writeError(res: ServerResponse, status: number, message: string, type = 'api_error'): void {
-  writeJson(res, status, { error: { message, type, code: type } })
+  writeJson(res, status, { error: { message: safeErrorMessage(message, '请求失败'), type, code: type } })
+}
+
+/** 统一清洗对外错误信息：折叠空白、截断、剔除 HTML，防止上游原文直接透传。 */
+function safeErrorMessage(value: unknown, fallback: string): string {
+  const raw = String(value ?? '').trim().replace(/\s+/g, ' ').slice(0, 300)
+  if (raw === '' || /<[a-z][\s\S]*>/i.test(raw)) return fallback
+  return raw
 }
 
 function readBody(req: IncomingMessage): Promise<Buffer> {
@@ -376,6 +385,7 @@ export function createGatewayServer(options: GatewayServerOptions): GatewayServe
   const registry = new ProviderRegistry({ logger: (message, detail) => logger.warn(message, detail) })
   const records = new Map<string, ProviderRecord>()
   const sockets = new Set<Socket>()
+  const loginFailures = new Map<string, { count: number; lockedUntil: number }>()
   const server: Server = createServer((req, res) => { void handle(req, res) })
   server.on('connection', socket => {
     sockets.add(socket)
@@ -386,6 +396,35 @@ export function createGatewayServer(options: GatewayServerOptions): GatewayServe
     server.once('error', rejectReady)
   })
   server.listen(port, host)
+
+  function loginLocked(client: string): boolean {
+    const entry = loginFailures.get(client)
+    if (entry === undefined) return false
+    if (entry.lockedUntil <= Date.now()) {
+      loginFailures.delete(client)
+      return false
+    }
+    return true
+  }
+
+  function recordLoginFailure(client: string): void {
+    const now = Date.now()
+    const entry = loginFailures.get(client)
+    const count = (entry === undefined || entry.lockedUntil <= now ? 0 : entry.count) + 1
+    if (count >= LOGIN_MAX_FAILURES) {
+      loginFailures.set(client, { count: 0, lockedUntil: now + LOGIN_LOCK_MS })
+    } else {
+      loginFailures.set(client, { count, lockedUntil: now })
+    }
+  }
+
+  function clearLoginFailures(client: string): void {
+    loginFailures.delete(client)
+  }
+
+  function clientIp(req: IncomingMessage): string {
+    return req.socket.remoteAddress ?? 'unknown'
+  }
 
   async function reloadProviders(): Promise<{ total: number; enabled: number }> {
     const next = new Set<string>()
@@ -456,27 +495,41 @@ export function createGatewayServer(options: GatewayServerOptions): GatewayServe
   }
 
   async function refreshAllModels(): Promise<Array<{ providerId: string; count: number; error?: string }>> {
-    const results: Array<{ providerId: string; count: number; error?: string }> = []
+    const jobs: Array<Promise<{ providerId: string; count: number; error?: string }>> = []
     for (const record of records.values()) {
       if (!record.enabled) continue
       const provider = registry.get(record.id)
       if (provider === undefined) continue
-      try {
-        const models = await registry.refreshModels(record.id)
-        results.push({ providerId: record.id, count: models.length })
-      } catch (error: unknown) {
-        results.push({
-          providerId: record.id,
-          count: registry.cachedModels(record.id).length,
-          error: error instanceof Error ? error.message : String(error),
-        })
-      }
+      jobs.push(
+        registry.refreshModels(record.id)
+          .then(models => ({ providerId: record.id, count: models.length }))
+          .catch((error: unknown) => ({
+            providerId: record.id,
+            count: registry.cachedModels(record.id).length,
+            error: error instanceof Error ? error.message : String(error),
+          })),
+      )
     }
-    return results
+    return Promise.all(jobs)
   }
 
-  function requireSession(req: IncomingMessage): boolean {
-    return authenticateSession(store, sessionToken(req)) !== undefined
+  /**
+   * 校验管理会话；剩余有效期不足一半时顺带续期并刷新 Cookie。
+   */
+  function authenticatedRequest(
+    req: IncomingMessage,
+    res: ServerResponse,
+  ): import('./auth.ts').SessionContext | undefined {
+    const token = sessionToken(req)
+    const session = authenticateSession(store, token)
+    if (session !== undefined && session.renewedExpiresAt !== undefined && token !== undefined) {
+      setSessionCookie(res, token, session.renewedExpiresAt)
+    }
+    return session
+  }
+
+  function requireSession(req: IncomingMessage, res: ServerResponse): boolean {
+    return authenticatedRequest(req, res) !== undefined
   }
 
   interface ChatInput {
@@ -592,8 +645,10 @@ export function createGatewayServer(options: GatewayServerOptions): GatewayServe
     const started = Date.now()
     const controller = new AbortController()
     const abort = (): void => controller.abort()
-    req.once('aborted', abort)
-    req.socket.once('close', abort)
+    const onAborted = (): void => abort()
+    const onSocketClose = (): void => abort()
+    req.once('aborted', onAborted)
+    req.socket.once('close', onSocketClose)
 
     const recordUsage = (status: number, usage?: { requestTokens?: number; responseTokens?: number; totalTokens?: number }): void => {
       store.insertUsage({
@@ -628,14 +683,15 @@ export function createGatewayServer(options: GatewayServerOptions): GatewayServe
       } catch {
         usage = undefined
       }
-      recordUsage(200, usage)
       let json: Record<string, unknown>
       try {
         json = JSON.parse(text) as Record<string, unknown>
       } catch {
+        recordUsage(502)
         onError(502, 'upstream returned an invalid JSON response', 'server')
         return
       }
+      recordUsage(200, usage)
       onJson(json, result.response.status)
       onDone()
       return
@@ -683,11 +739,14 @@ export function createGatewayServer(options: GatewayServerOptions): GatewayServe
     })
     const readable = Readable.fromWeb(source.pipeThrough(textLines) as Parameters<typeof Readable.fromWeb>[0])
     let finished = false
+    let streamFailed = false
     const done = (status: number): void => {
       if (finished) return
       finished = true
+      req.removeListener('aborted', onAborted)
+      req.socket.removeListener('close', onSocketClose)
       recordUsage(status, capturedUsage)
-      onDone()
+      if (!streamFailed) onDone()
     }
     const lineFeed = async (): Promise<void> => {
       const lines = Readable.from(readable, { objectMode: true })
@@ -700,6 +759,7 @@ export function createGatewayServer(options: GatewayServerOptions): GatewayServe
     }
     lineFeed().catch((error: unknown) => {
       if (finished) return
+      streamFailed = true
       logger.error('upstream stream error', error instanceof Error ? error.message : String(error))
       done(502)
       onError(502, 'upstream stream failed', 'server')
@@ -771,22 +831,23 @@ export function createGatewayServer(options: GatewayServerOptions): GatewayServe
         if (typeof content === 'string' && content.trim() !== '') {
           messages.push({ role: item['role'] === 'user' ? 'user' : 'assistant', content })
         } else if (Array.isArray(content)) {
-          const text = content
-            .map(part => {
-              if (typeof part === 'string') return part
-              if (typeof part === 'object' && part !== null) {
-                const record = part as Record<string, unknown>
-                if (record['type'] === 'input_text' || record['type'] === 'output_text') {
-                  return typeof record['text'] === 'string' ? record['text'] : ''
-                }
-                if (record['type'] === 'input_image' && typeof record['image_url'] === 'string') {
-                  return record['image_url']
-                }
-              }
-              return ''
-            })
-            .filter(text => text !== '')
-          if (text.length > 0) messages.push({ role: item['role'] === 'user' ? 'user' : 'assistant', content: text.join('\n') })
+          const convertedContent: Array<Record<string, unknown> | string> = []
+          for (const part of content) {
+            if (typeof part === 'string' && part !== '') {
+              convertedContent.push(part)
+              continue
+            }
+            if (typeof part !== 'object' || part === null) continue
+            const record = part as Record<string, unknown>
+            if ((record['type'] === 'input_text' || record['type'] === 'output_text') && typeof record['text'] === 'string' && record['text'] !== '') {
+              convertedContent.push(record['text'])
+              continue
+            }
+            if (record['type'] === 'input_image' && typeof record['image_url'] === 'string' && record['image_url'] !== '') {
+              convertedContent.push({ type: 'image_url', image_url: { url: record['image_url'] } })
+            }
+          }
+          if (convertedContent.length > 0) messages.push({ role: item['role'] === 'user' ? 'user' : 'assistant', content: convertedContent })
         }
       } else if (item['type'] === 'function_call') {
         messages.push({
@@ -905,10 +966,23 @@ export function createGatewayServer(options: GatewayServerOptions): GatewayServe
     return `event: ${type}\ndata: ${JSON.stringify({ type, ...data, id, sequence_number: 0 })}\n\n`
   }
 
+  interface ResponseToolArguments {
+    callId?: string
+    name?: string
+    arguments: string
+  }
+
+  /**
+   * 把 Chat SSE chunk 转成 Responses 事件，并在流内聚合工具参数分片。
+   *
+   * `function_call_arguments.done` 必须等参数分片收齐（finish_reason）后
+   * 再发；状态保存在调用方传入的 Map 中，避免流式回调之间丢状态。
+   */
   function responsesStreamLine(
     json: Record<string, unknown>,
     requestModel: string,
     id: string,
+    toolArguments: Map<number, ResponseToolArguments>,
   ): Array<{ type: string; data: Record<string, unknown> }> {
     const model = typeof json['model'] === 'string' ? json['model'] : requestModel
     const choices = Array.isArray(json['choices']) ? json['choices'] : []
@@ -925,26 +999,45 @@ export function createGatewayServer(options: GatewayServerOptions): GatewayServe
       const callRecord = call as Record<string, unknown>
       const fn = callRecord['function'] as Record<string, unknown> | undefined
       const index = typeof callRecord['index'] === 'number' ? callRecord['index'] : 0
+      let state = toolArguments.get(index)
+      if (state === undefined) {
+        state = { arguments: '' }
+        toolArguments.set(index, state)
+      }
       if (callRecord['id'] !== undefined) {
-        events.push({
-          type: 'response.function_call_arguments.done',
-          data: {
-            item_id: id,
-            output_index: index,
-            call_id: callRecord['id'],
-            name: fn?.['name'] ?? '',
-            arguments: typeof fn?.['arguments'] === 'string' ? fn['arguments'] : '',
-          },
-        })
-      } else if (typeof fn?.['arguments'] === 'string' && fn['arguments'] !== '') {
+        state.callId = String(callRecord['id'])
+      }
+      const name = fn?.['name']
+      if (typeof name === 'string' && name !== '') state.name = name
+      if (typeof fn?.['arguments'] === 'string' && fn['arguments'] !== '') {
+        state.arguments += fn['arguments']
         events.push({
           type: 'response.function_call_arguments.delta',
-          data: { item_id: id, output_index: index, delta: fn['arguments'] },
+          data: { item_id: id, output_index: index, delta: String(fn['arguments']) },
         })
       }
     }
-    if (finish !== undefined && finish !== null) {
-      events.push({ type: 'response.completed', data: { status: 'completed' } })
+    return events
+  }
+
+  /** 把所有未收尾的工具参数按标准顺序补发 done 事件。 */
+  function flushToolArguments(
+    toolArguments: Map<number, ResponseToolArguments>,
+    responseId: string,
+  ): Array<{ type: string; data: Record<string, unknown> }> {
+    const events: Array<{ type: string; data: Record<string, unknown> }> = []
+    for (const [index, state] of toolArguments) {
+      if (state.callId === undefined) continue
+      events.push({
+        type: 'response.function_call_arguments.done',
+        data: {
+          item_id: responseId,
+          output_index: index,
+          call_id: state.callId,
+          name: state.name ?? '',
+          arguments: state.arguments,
+        },
+      })
     }
     return events
   }
@@ -1003,9 +1096,7 @@ export function createGatewayServer(options: GatewayServerOptions): GatewayServe
         () => {
           // 非流式不会走到这里
         },
-        () => {
-          // 非流式已在回调里结束响应
-        },
+        () => {},
         (status, message, kind) => {
           writeError(res, status, message, kind)
         },
@@ -1014,7 +1105,9 @@ export function createGatewayServer(options: GatewayServerOptions): GatewayServe
     }
 
     let responseId = `resp_${Math.random().toString(36).slice(2, 14)}`
+    const toolArguments = new Map<number, ResponseToolArguments>()
     let started = false
+    let finished = false
     const start = (): void => {
       if (started) return
       started = true
@@ -1028,11 +1121,19 @@ export function createGatewayServer(options: GatewayServerOptions): GatewayServe
       }))
     }
     const finish = (): void => {
-      if (!started) return
+      if (!started || finished) return
+      finished = true
       res.write(responsesSseEvent(responseId, 'response.completed', {
         response: { id: responseId, object: 'response', status: 'completed', model: rawInput['model'] ?? '' },
       }))
       res.end()
+    }
+    const completeStream = (): void => {
+      start()
+      for (const item of flushToolArguments(toolArguments, responseId)) {
+        res.write(responsesSseEvent(responseId, item.type, item.data))
+      }
+      finish()
     }
     await runChatInternal(
       key,
@@ -1063,11 +1164,11 @@ export function createGatewayServer(options: GatewayServerOptions): GatewayServe
           return
         }
         start()
-        for (const item of responsesStreamLine(event, String(rawInput['model'] ?? ''), responseId)) {
+        for (const item of responsesStreamLine(event, String(rawInput['model'] ?? ''), responseId, toolArguments)) {
           res.write(responsesSseEvent(responseId, item.type, item.data))
         }
       },
-      () => finish(),
+      () => completeStream(),
       (status, message, kind) => {
         if (!started) writeError(res, status, message, kind)
         else {
@@ -1115,128 +1216,25 @@ export function createGatewayServer(options: GatewayServerOptions): GatewayServe
       writeError(res, 400, 'Request body must be valid JSON', 'invalid_json')
       return
     }
-    const model = typeof input['model'] === 'string' ? input['model'] : ''
-    const slash = model.indexOf('/')
-    if (model === '' || slash <= 0 || slash === model.length - 1) {
-      writeError(res, 404, `Unknown model: ${model || '(empty)'}（模型 id 应为 <providerId>/<modelId>）`, 'model_not_found')
-      return
-    }
-    const providerId = model.slice(0, slash)
-    const upstreamModel = model.slice(slash + 1)
-    if (key.modelPrefixes.length > 0 && !key.modelPrefixes.includes(providerId)) {
-      writeError(res, 403, `API key 无权访问 provider: ${providerId}`, 'forbidden')
-      return
-    }
-    if (key.modelIds.length > 0 && !key.modelIds.includes(`${providerId}/${upstreamModel}`)) {
-      writeError(res, 403, `API key 无权访问模型: ${providerId}/${upstreamModel}`, 'forbidden')
-      return
-    }
-    const record = records.get(providerId)
-    const provider = registry.get(providerId)
-    if (record === undefined || record.enabled !== 1 || provider === undefined) {
-      writeError(res, 404, `Unknown provider: ${providerId}`, 'provider_not_found')
-      return
-    }
-    const upstreamBody = { ...input, model: upstreamModel }
-    const started = Date.now()
-    const controller = new AbortController()
-    const abort = (): void => controller.abort()
-    req.once('aborted', abort)
-    req.socket.once('close', abort)
-
-    const recordUsage = (status: number, usage?: { requestTokens?: number; responseTokens?: number; totalTokens?: number }): void => {
-      store.insertUsage({
-        ts: Date.now(),
-        apiKeyId: key.id,
-        providerId,
-        model,
-        requestTokens: usage?.requestTokens ?? 0,
-        responseTokens: usage?.responseTokens ?? 0,
-        totalTokens: usage?.totalTokens ?? 0,
-        status,
-        durationMs: Date.now() - started,
-        streamed: input['stream'] === true ? 1 : 0,
-      })
-    }
-
-    const result = await registry.chat(providerId, JSON.stringify(upstreamBody), controller.signal, {
-      sessionId: resolveSessionId(req, input),
-    })
-    if (!result.ok) {
-      const status = result.status > 0 ? result.status : STATUS_BY_KIND[result.kind] ?? 502
-      recordUsage(status)
-      writeError(res, status, result.message, result.kind)
-      return
-    }
-
-    if (input['stream'] === true) {
-      const source = result.response.body
-      if (source === null) {
-        recordUsage(502)
-        writeError(res, 502, 'upstream returned an empty stream', 'server')
-        return
-      }
-      let capturedUsage: { requestTokens?: number; responseTokens?: number; totalTokens?: number } | undefined
-      const decoder = new TextDecoder()
-      const encoder = new TextEncoder()
-      let buffer = ''
-      const observe = (chunk: Uint8Array): Uint8Array => {
-        buffer += decoder.decode(chunk, { stream: true })
-        const lines = buffer.split('\n')
-        buffer = lines.pop() ?? ''
-        for (const line of lines) {
-          if (!line.startsWith('data:')) continue
-          const data = line.slice(5).trim()
-          if (data === '' || data === '[DONE]') continue
-          try {
-            const event = JSON.parse(data) as Record<string, unknown>
-            const usage = normalizeUsage(event['usage'])
-            if (usage !== undefined) capturedUsage = usage
-          } catch {
-            // 非 JSON 数据行忽略
-          }
-        }
-        return chunk
-      }
-      const transformed = new TransformStream<Uint8Array, Uint8Array>({
-        transform(chunk, controllerInner) {
-          controllerInner.enqueue(observe(chunk))
-        },
-      })
-      const body = source.pipeThrough(transformed)
-      res.writeHead(200, {
-        'Content-Type': 'text/event-stream',
-        'Cache-Control': 'no-cache',
-        'X-Accel-Buffering': 'no',
-      })
-      const readable = Readable.fromWeb(body as Parameters<typeof Readable.fromWeb>[0])
-      let finished = false
-      const done = (status: number): void => {
-        if (finished) return
-        finished = true
-        recordUsage(status, capturedUsage)
-      }
-      readable.on('end', () => done(200))
-      readable.on('close', () => done(200))
-      readable.on('error', () => done(502))
-      readable.pipe(res)
-      return
-    }
-
-    const text = await result.response.text()
-    let usage: { requestTokens?: number; responseTokens?: number; totalTokens?: number } | undefined
+    let parsed: ChatInput
     try {
-      usage = normalizeUsage((JSON.parse(text) as Record<string, unknown>)['usage'])
-    } catch {
-      usage = undefined
+      parsed = parseChatRequest(input)
+    } catch (error: unknown) {
+      if (typeof error === 'object' && error !== null && 'status' in error) {
+        const failure = error as { status: number; kind: string; message: string }
+        writeError(res, failure.status, failure.message, failure.kind)
+      } else {
+        throw error
+      }
+      return
     }
-    recordUsage(200, usage)
-    res.writeHead(result.response.status, {
-      'Content-Type': 'application/json; charset=utf-8',
-      'Content-Length': Buffer.byteLength(text),
-      'Cache-Control': 'no-store',
-    })
-    res.end(text)
+    parsed.sessionId = resolveSessionId(req, input)
+    await runChat(
+      key,
+      parsed,
+      req,
+      res,
+    )
   }
 
   async function handleAdmin(req: IncomingMessage, res: ServerResponse): Promise<void> {
@@ -1247,30 +1245,44 @@ export function createGatewayServer(options: GatewayServerOptions): GatewayServe
         writeError(res, 409, '管理员已存在', 'admin_exists')
         return
       }
+      const client = clientIp(req)
+      if (loginLocked(client)) {
+        writeError(res, 429, '尝试过于频繁，请稍后再试', 'rate_limited')
+        return
+      }
       const body = await readJsonBody(req)
       const username = typeof body['username'] === 'string' ? body['username'].trim() : ''
       const password = typeof body['password'] === 'string' ? body['password'] : ''
       if (username === '' || username.length > 64 || password.length < 8 || password.length > 256) {
+        recordLoginFailure(client)
         writeError(res, 400, '用户名不能为空（≤64 字符），密码需 8-256 字符', 'invalid_input')
         return
       }
       const admin = store.createAdmin(username, hashPassword(password))
       const session = createSession(store, admin.id)
       setSessionCookie(res, session.token, session.expiresAt)
+      clearLoginFailures(client)
       writeJson(res, 200, { ok: true, admin: { username: admin.username } })
       return
     }
     if (req.method === 'POST' && path === '/api/login') {
+      const client = clientIp(req)
+      if (loginLocked(client)) {
+        writeError(res, 429, '尝试过于频繁，请稍后再试', 'rate_limited')
+        return
+      }
       const body = await readJsonBody(req)
       const username = typeof body['username'] === 'string' ? body['username'].trim() : ''
       const password = typeof body['password'] === 'string' ? body['password'] : ''
       const admin = store.getAdminByUsername(username)
       if (admin === undefined || !verifyPassword(password, admin.passwordHash)) {
+        recordLoginFailure(client)
         writeError(res, 401, '用户名或密码错误', 'invalid_credentials')
         return
       }
       const session = createSession(store, admin.id)
       setSessionCookie(res, session.token, session.expiresAt)
+      clearLoginFailures(client)
       writeJson(res, 200, { ok: true, admin: { username: admin.username } })
       return
     }
@@ -1281,7 +1293,7 @@ export function createGatewayServer(options: GatewayServerOptions): GatewayServe
       return
     }
     if (req.method === 'GET' && path === '/api/session') {
-      const session = authenticateSession(store, sessionToken(req))
+      const session = authenticatedRequest(req, res)
       if (session === undefined) {
         writeJson(res, 200, { authed: false, needsSetup: !store.hasAdmin() })
         return
@@ -1289,13 +1301,13 @@ export function createGatewayServer(options: GatewayServerOptions): GatewayServe
       writeJson(res, 200, { authed: true, needsSetup: false })
       return
     }
-    if (!requireSession(req)) {
+    if (!requireSession(req, res)) {
       writeError(res, 401, '请先登录', 'unauthorized')
       return
     }
 
     if (req.method === 'GET' && path === '/api/settings') {
-      const session = authenticateSession(store, sessionToken(req))
+      const session = authenticatedRequest(req, res)
       const admin = session === undefined ? undefined : store.getAdmin(session.adminId)
       writeJson(res, 200, {
         username: admin?.username ?? '',
@@ -1307,9 +1319,42 @@ export function createGatewayServer(options: GatewayServerOptions): GatewayServe
       return
     }
 
+    if (req.method === 'GET' && path === '/api/dashboard') {
+      const providers = store.listProviders()
+      const enabled = providers.filter(record => record.enabled === 1)
+      const totalModels = enabled.reduce((sum, record) => sum + registry.cachedModels(record.id).length, 0)
+      const now = Date.now()
+      const todayStart = new Date()
+      todayStart.setHours(0, 0, 0, 0)
+      const today = store.usageSummary({ from: todayStart.getTime() })
+      const total = store.usageSummary({ to: now })
+      const byModel = store.usageBreakdown('model', { from: todayStart.getTime(), to: now })
+      const byProvider = store.usageBreakdown('provider_id', { from: todayStart.getTime(), to: now })
+      writeJson(res, 200, {
+        providers: {
+          total: providers.length,
+          enabled: enabled.length,
+        },
+        models: totalModels,
+        usage: {
+          today: {
+            requests: today.requests,
+            totalTokens: today.totalTokens,
+            byModel: byModel.map(item => ({ model: item.key ?? '-', requests: item.requests, totalTokens: item.totalTokens })),
+            byProvider: byProvider.map(item => ({ providerId: item.key ?? '-', requests: item.requests, totalTokens: item.totalTokens })),
+          },
+          total: {
+            requests: total.requests,
+            totalTokens: total.totalTokens,
+          },
+        },
+      })
+      return
+    }
+
     if (req.method === 'POST' && path === '/api/settings/admin') {
       const body = await readJsonBody(req)
-      const session = authenticateSession(store, sessionToken(req))
+      const session = authenticatedRequest(req, res)
       if (session === undefined) {
         writeError(res, 401, '请先登录', 'unauthorized')
         return
@@ -1350,7 +1395,7 @@ export function createGatewayServer(options: GatewayServerOptions): GatewayServe
 
     if (req.method === 'POST' && path === '/api/change-password') {
       const body = await readJsonBody(req)
-      const session = authenticateSession(store, sessionToken(req))
+      const session = authenticatedRequest(req, res)
       if (session === undefined) {
         writeError(res, 401, '请先登录', 'unauthorized')
         return

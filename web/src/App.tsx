@@ -8,7 +8,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { createPortal } from 'react-dom'
 import type { FormEvent } from 'react'
-import { api, type ApiKey, type Provider, type UsageResponse } from './api.ts'
+import { api, type ApiKey, type Dashboard, type Provider } from './api.ts'
 
 type View = 'overview' | 'providers' | 'keys' | 'usage' | 'provider-detail' | 'settings'
 
@@ -291,15 +291,23 @@ function AuthScreen({ onDone }: { onDone: () => void }) {
   )
 }
 
-function Overview({ providers, usage }: { providers: Provider[]; usage: UsageResponse | undefined }) {
+function Overview({ providers, dashboard, onRefresh }: {
+  providers: Provider[]
+  dashboard: Dashboard | undefined
+  onRefresh: () => void
+}) {
   const enabled = providers.filter(provider => provider.enabled)
-  const totalModels = providers.reduce((sum, provider) => sum + (provider.modelCount ?? 0), 0)
+  const totalModels = dashboard?.models ?? providers.reduce((sum, provider) => sum + (provider.modelCount ?? 0), 0)
   const cards = [
     { label: '启用渠道', value: `${enabled.length}/${providers.length}` },
     { label: '已配置模型', value: formatNumber(totalModels) },
-    { label: '累计请求', value: usage === undefined ? '-' : formatNumber(usage.summary.requests) },
-    { label: '累计 Token', value: usage === undefined ? '-' : formatToken(usage.summary.totalTokens) },
+    { label: '今日请求', value: dashboard === undefined ? '-' : formatNumber(dashboard.usage.today.requests) },
+    { label: '累计 Token', value: dashboard === undefined ? '-' : formatToken(dashboard.usage.total.totalTokens) },
   ]
+  const modelRows = dashboard?.usage.today.byModel ?? []
+  const providerRows = dashboard?.usage.today.byProvider ?? []
+  const maxModelTokens = Math.max(...modelRows.map(row => row.totalTokens), 0)
+  const maxProviderTokens = Math.max(...providerRows.map(row => row.totalTokens), 0)
   return (
     <section>
       <div className="stat-grid">
@@ -309,6 +317,65 @@ function Overview({ providers, usage }: { providers: Provider[]; usage: UsageRes
             <span className="stat-value">{card.value}</span>
           </div>
         ))}
+      </div>
+      <div className="overview-actions">
+        <button className="secondary compact" onClick={onRefresh}>刷新</button>
+      </div>
+      <div className="usage-mini-grid">
+        <div className="panel">
+          <div className="panel-head">
+            <h2>今日模型用量</h2>
+          </div>
+          {modelRows.length === 0 ? (
+            <div className="empty">今日暂无模型请求</div>
+          ) : (
+            <div className="usage-rows">
+              {modelRows.slice(0, 6).map(row => (
+                <div className="usage-row" key={row.model}>
+                  <div className="usage-row-head">
+                    <span className="mono">{row.model}</span>
+                    <span className="usage-row-value">{formatToken(row.totalTokens)}</span>
+                  </div>
+                  <div className="usage-bar">
+                    <div
+                      className="usage-bar-fill"
+                      style={{ width: `${maxModelTokens === 0 ? 0 : Math.max(2, (row.totalTokens / maxModelTokens) * 100)}%` }}
+                      title={`${row.requests} 次请求`}
+                    />
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+        <div className="panel">
+          <div className="panel-head">
+            <h2>今日渠道用量</h2>
+          </div>
+          {providerRows.length === 0 ? (
+            <div className="empty">今日暂无渠道请求</div>
+          ) : (
+            <div className="usage-rows">
+              {providerRows.slice(0, 6).map(row => (
+                <div className="usage-row" key={row.providerId}>
+                  <div className="usage-row-head">
+                    <span className="mono">{row.providerId}</span>
+                    <span className="usage-row-value">
+                      {formatNumber(row.requests)} 次 · {formatToken(row.totalTokens)}
+                    </span>
+                  </div>
+                  <div className="usage-bar">
+                    <div
+                      className="usage-bar-fill"
+                      style={{ width: `${maxProviderTokens === 0 ? 0 : Math.max(2, (row.totalTokens / maxProviderTokens) * 100)}%` }}
+                      title={`${formatToken(row.totalTokens)} tokens`}
+                    />
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
       </div>
       <div className="panel">
         <div className="panel-head">
@@ -1619,7 +1686,7 @@ function Sidebar({ view, onView, onLogout }: {
       </nav>
       <div className="sidebar-foot">
         <span className="dot" />
-        <span>39310</span>
+        <span>{window.location.port || '39310'}</span>
         <button className="link-button" onClick={onLogout}>退出登录</button>
       </div>
     </aside>
@@ -1629,7 +1696,7 @@ function Sidebar({ view, onView, onLogout }: {
 function Shell() {
   const [view, setView] = useState<View>(viewFromPath)
   const providers = useAsync(() => api.providers(), [])
-  const usage = useAsync(() => api.usage(), [])
+  const dashboard = useAsync(() => api.dashboard(), [])
   const logout = async (): Promise<void> => {
     await api.logout()
     window.location.reload()
@@ -1658,7 +1725,7 @@ function Shell() {
     : view === 'usage' ? '用量'
     : view === 'settings' ? '设置'
     : '渠道详情'
-  const endpointUrl = view === 'settings' ? `http://127.0.0.1:${window.location.port || '39310'}/v1` : 'http://127.0.0.1:39310/v1'
+  const endpointUrl = `http://127.0.0.1:${window.location.port || '39310'}/v1`
 
   return (
     <div className="shell">
@@ -1668,7 +1735,16 @@ function Shell() {
           <h1>{topbarTitle}</h1>
           <span className="endpoint mono">{endpointUrl}</span>
         </header>
-        {view === 'overview' && <Overview providers={providers.data?.data ?? []} usage={usage.data} />}
+        {view === 'overview' && (
+          <Overview
+            providers={providers.data?.data ?? []}
+            dashboard={dashboard.data}
+            onRefresh={() => {
+              providers.reload()
+              dashboard.reload()
+            }}
+          />
+        )}
         {view === 'providers' && <ChannelsView onOpenDetail={openDetail} />}
         {view === 'provider-detail' && providerId !== undefined && (
           <ChannelDetail id={providerId} onBack={backToProviders} onDeleted={backToProviders} />

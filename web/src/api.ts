@@ -83,6 +83,20 @@ export interface CcSwitchFillResult {
   models?: string[]
 }
 
+export interface Dashboard {
+  providers: { total: number; enabled: number }
+  models: number
+  usage: {
+    today: {
+      requests: number
+      totalTokens: number
+      byModel: Array<{ model: string; requests: number; totalTokens: number }>
+      byProvider: Array<{ providerId: string; requests: number; totalTokens: number }>
+    }
+    total: { requests: number; totalTokens: number }
+  }
+}
+
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
   const response = await fetch(url, {
     ...init,
@@ -115,6 +129,7 @@ export const api = {
   changePassword: (currentPassword: string, newPassword: string) =>
     request<{ ok: boolean }>('/api/change-password', { method: 'POST', body: JSON.stringify({ currentPassword, newPassword }) }),
   settings: () => request<GatewaySettings>('/api/settings'),
+  dashboard: () => request<Dashboard>('/api/dashboard'),
   updateAdmin: (username: string, currentPassword: string, newPassword: string) =>
     request<{ ok: boolean; username: string }>('/api/settings/admin', {
       method: 'POST',

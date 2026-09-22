@@ -91,6 +91,8 @@ export function authenticateApiKey(
 export interface SessionContext {
   sessionId: string
   adminId: number
+  /** 会话续期后的新过期时间；未续期时为 undefined。 */
+  renewedExpiresAt?: number
 }
 
 /** 解析管理会话 Cookie/Header 中的 token（数据库只存哈希）。 */
@@ -103,7 +105,11 @@ export function authenticateSession(store: GatewayStore, token: string | undefin
     store.deleteSession(record.id)
     return undefined
   }
-  return { sessionId: record.id, adminId: record.adminId }
+  const remaining = record.expiresAt - now
+  const renewedExpiresAt = remaining < SESSION_TTL_MS / 2
+    ? store.touchSession(record.id, now + SESSION_TTL_MS)
+    : undefined
+  return { sessionId: record.id, adminId: record.adminId, ...(renewedExpiresAt === undefined ? {} : { renewedExpiresAt }) }
 }
 
 /** 创建管理会话并返回明文 token（仅本次响应返回）。 */

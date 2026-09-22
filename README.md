@@ -83,6 +83,7 @@ TRAE_PROXY_KEY=tr-xxxxxxxx node scripts/inject-config.cjs
 | --- | --- | --- |
 | `TRAE_PROXY_PORT` | `39310` | 网关端口 |
 | `TRAE_PROXY_HOST` | `127.0.0.1` | 监听地址 |
+| `TRAE_PROXY_USAGE_RETENTION_DAYS` | `180` | 用量明细保留天数，`0` 表示永久保留 |
 
 ## 安全
 

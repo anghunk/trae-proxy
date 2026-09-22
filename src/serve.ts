@@ -17,6 +17,8 @@ import { CONFIG_DIR, DEFAULT_DB_PATH, openGatewayStore, type ProviderRecord } fr
 
 const PORT = Number(process.env['TRAE_PROXY_PORT'] ?? 39310)
 const HOST = process.env['TRAE_PROXY_HOST'] ?? '127.0.0.1'
+/** 用量明细保留天数；0 表示永久保留。 */
+const USAGE_RETENTION_DAYS = Number(process.env['TRAE_PROXY_USAGE_RETENTION_DAYS'] ?? 180)
 
 function ts(): string {
   return new Date().toISOString()
@@ -64,6 +66,16 @@ function seedDefaultProviders(store: ReturnType<typeof openGatewayStore>): void 
   }
 }
 
+/** 按保留天数清理过期用量明细，失败只记录日志，不中断网关。 */
+function pruneUsageOnce(store: ReturnType<typeof openGatewayStore>, now: number): void {
+  try {
+    const pruned = store.pruneUsage(now - USAGE_RETENTION_DAYS * 24 * 60 * 60 * 1000)
+    if (pruned > 0) logger.info(`用量清理完成，删除 ${pruned} 条过期记录`)
+  } catch (error: unknown) {
+    logger.warn(`用量清理失败: ${error instanceof Error ? error.message : String(error)}`)
+  }
+}
+
 async function main(): Promise<void> {
   mkdirSync(CONFIG_DIR, { recursive: true, mode: 0o700 })
   const store = openGatewayStore(DEFAULT_DB_PATH)
@@ -99,8 +111,10 @@ async function main(): Promise<void> {
   const cleanupTimer = setInterval(() => {
     const now = Date.now()
     store.deleteExpiredSessions(now)
+    if (USAGE_RETENTION_DAYS > 0) pruneUsageOnce(store, now)
   }, 60 * 60 * 1000)
   cleanupTimer.unref()
+  if (USAGE_RETENTION_DAYS > 0) pruneUsageOnce(store, Date.now())
 
   logger.info(`统一网关已就绪: ${server.baseUrl()} (healthz=/healthz, models=/v1/models)`)
   logger.info(`管理台: ${server.baseUrl()}/  (首次访问请先创建管理员)`)

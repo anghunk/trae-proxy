@@ -10,6 +10,7 @@ import type {
   GatewayModel,
   UpstreamProvider,
 } from '../providers.ts'
+import { readableUpstreamError } from '../providers.ts'
 import type { ProviderRecord } from '../store.ts'
 import { modelFromOpenAI } from '../providers.ts'
 
@@ -107,13 +108,13 @@ export class OpenAiCompatibleProvider implements UpstreamProvider {
       }
     }
     if (!response.ok) {
-      const text = (await response.text()).slice(0, 1024)
-      this.logger?.('openai-compatible chat rejected', { providerId: this.id, status: response.status, body: text })
+      const text = await response.text()
+      this.logger?.('openai-compatible chat rejected', { providerId: this.id, status: response.status, body: text.slice(0, 2048) })
       return {
         ok: false,
         status: response.status,
         kind: classifyStatus(response.status),
-        message: text || `openai-compatible upstream returned HTTP ${response.status}`,
+        message: readableUpstreamError(text, `openai-compatible upstream returned HTTP ${response.status}`),
       }
     }
     return { ok: true, response }

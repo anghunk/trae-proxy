@@ -11,6 +11,7 @@
  */
 
 import type { GatewayChatFailure, GatewayChatResult, GatewayModel, UpstreamProvider } from '../providers.ts'
+import { readableUpstreamError } from '../providers.ts'
 import type { ProviderRecord } from '../store.ts'
 
 interface AnthropicMessage {
@@ -43,7 +44,16 @@ function normalizeContent(content: unknown): unknown {
     }
     if (record['type'] === 'image_url' && typeof record['image_url'] === 'object' && record['image_url'] !== null) {
       const url = (record['image_url'] as Record<string, unknown>)['url']
-      if (typeof url === 'string') return { type: 'image', source: { type: 'base64', media_type: 'image/png', data: url.split(',')[1] ?? url } }
+      if (typeof url === 'string') {
+        const match = /^data:image\/(png|jpeg|jpg|webp|gif);base64,(.*)$/is.exec(url)
+        if (match !== null) {
+          const mime = match[1]?.toLowerCase() === 'jpg' ? 'jpeg' : match[1]?.toLowerCase() ?? 'png'
+          return { type: 'image', source: { type: 'base64', media_type: `image/${mime}`, data: match[2] ?? '' } }
+        }
+        if (url.startsWith('http://') || url.startsWith('https://')) {
+          return { type: 'image', source: { type: 'url', url } }
+        }
+      }
     }
     return item
   })
@@ -336,13 +346,13 @@ export class AnthropicProvider implements UpstreamProvider {
       }
     }
     if (!response.ok) {
-      const text = (await response.text()).slice(0, 1024)
-      this.logger?.('anthropic chat rejected', { providerId: this.id, status: response.status, body: text })
+      const text = await response.text()
+      this.logger?.('anthropic chat rejected', { providerId: this.id, status: response.status, body: text.slice(0, 2048) })
       return {
         ok: false,
         status: response.status,
         kind: classifyStatus(response.status),
-        message: text || `anthropic upstream returned HTTP ${response.status}`,
+        message: readableUpstreamError(text, `anthropic upstream returned HTTP ${response.status}`),
       }
     }
     if (isStream) {

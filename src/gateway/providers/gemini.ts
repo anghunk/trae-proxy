@@ -4,6 +4,7 @@
  */
 
 import type { GatewayChatFailure, GatewayChatResult, GatewayModel, UpstreamProvider } from '../providers.ts'
+import { readableUpstreamError } from '../providers.ts'
 import type { ProviderRecord } from '../store.ts'
 
 function normalizeGeminiContent(content: unknown): unknown {
@@ -13,6 +14,24 @@ function normalizeGeminiContent(content: unknown): unknown {
     if (typeof item !== 'object' || item === null) return item
     const record = item as Record<string, unknown>
     if (record['type'] === 'text' && typeof record['text'] === 'string') return record['text']
+    if (record['type'] === 'image_url' && typeof record['image_url'] === 'object' && record['image_url'] !== null) {
+      const url = (record['image_url'] as Record<string, unknown>)['url']
+      if (typeof url === 'string' && /^data:image\/(png|jpeg|jpg|webp|gif);base64,/i.test(url)) {
+        const match = /^data:image\/(png|jpeg|jpg|webp|gif);base64,(.*)$/is.exec(url)
+        if (match !== null) {
+          const mime = match[1]?.toLowerCase() === 'jpg' ? 'jpeg' : match[1]?.toLowerCase() ?? 'png'
+          return {
+            inlineData: {
+              mimeType: `image/${mime}`,
+              data: match[2] ?? '',
+            },
+          }
+        }
+      }
+      if (typeof url === 'string' && url !== '') {
+        return { fileData: { fileUri: url, mimeType: 'image/png' } }
+      }
+    }
     return item
   })
 }
@@ -222,13 +241,13 @@ export class GeminiProvider implements UpstreamProvider {
       }
     }
     if (!response.ok) {
-      const text = (await response.text()).slice(0, 1024)
-      this.logger?.('gemini chat rejected', { providerId: this.id, status: response.status, body: text })
+      const text = await response.text()
+      this.logger?.('gemini chat rejected', { providerId: this.id, status: response.status, body: text.slice(0, 2048) })
       return {
         ok: false,
         status: response.status,
         kind: classifyStatus(response.status),
-        message: text || `gemini upstream returned HTTP ${response.status}`,
+        message: readableUpstreamError(text, `gemini upstream returned HTTP ${response.status}`),
       }
     }
     if (isStream) return { ok: true, response: bridgeGeminiStream(response, model) }

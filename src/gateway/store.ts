@@ -90,8 +90,14 @@ export interface UsageSummary {
   durationMs: number
 }
 
+const USAGE_FLUSH_MS = 250
+const USAGE_BATCH_MAX = 200
+
 export class GatewayStore {
   private readonly db: DatabaseSync
+  private readonly usageQueue: Array<Omit<UsageEventRecord, 'id'>> = []
+  private usageTimer: ReturnType<typeof setTimeout> | undefined
+  private usageFlushing = false
 
   private constructor(db: DatabaseSync) {
     this.db = db
@@ -174,6 +180,8 @@ export class GatewayStore {
       CREATE INDEX IF NOT EXISTS idx_usage_ts ON usage_events(ts);
       CREATE INDEX IF NOT EXISTS idx_usage_api_key ON usage_events(api_key_id);
       CREATE INDEX IF NOT EXISTS idx_usage_provider ON usage_events(provider_id);
+      CREATE INDEX IF NOT EXISTS idx_usage_model ON usage_events(model);
+      CREATE INDEX IF NOT EXISTS idx_usage_recent ON usage_events(ts DESC, id DESC);
     `)
     const apiKeyColumns = this.db.prepare('PRAGMA table_info(api_keys)').all() as Array<{ name: string }>
     if (!apiKeyColumns.some(column => column.name === 'app')) {
@@ -529,6 +537,15 @@ export class GatewayStore {
     }
   }
 
+  /** 续期一个有效会话，返回新的过期时间；不存在或已过期时返回 undefined。 */
+  touchSession(id: string, expiresAt: number): number | undefined {
+    const result = this.db
+      .prepare('UPDATE sessions SET expires_at = ? WHERE id = ? AND expires_at > ?')
+      .run(expiresAt, id, Date.now())
+    if (result.changes !== 1) return undefined
+    return expiresAt
+  }
+
   deleteSession(id: string): void {
     this.db.prepare('DELETE FROM sessions WHERE id = ?').run(id)
   }
@@ -537,27 +554,56 @@ export class GatewayStore {
     this.db.prepare('DELETE FROM sessions WHERE expires_at <= ?').run(now)
   }
 
-  /** 记录一次 /v1 请求用量。 */
+  /**
+   * 记录一次 /v1 请求用量。
+   *
+   * 写入先进入内存队列，由定时 flush 批量落库，避免每次对话请求都同步
+   * 写 SQLite 阻塞事件循环。用量查询入口会先 flush，保证管理台看到的数据
+   * 与已完成的请求一致。
+   */
   insertUsage(event: Omit<UsageEventRecord, 'id'>): void {
-    this.db
-      .prepare(
-        `INSERT INTO usage_events (
-           ts, api_key_id, provider_id, model, request_tokens, response_tokens,
-           total_tokens, status, duration_ms, streamed
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      )
-      .run(
-        event.ts,
-        event.apiKeyId ?? null,
-        event.providerId ?? null,
-        event.model ?? null,
-        event.requestTokens,
-        event.responseTokens,
-        event.totalTokens,
-        event.status,
-        event.durationMs,
-        event.streamed,
-      )
+    this.usageQueue.push(event)
+    if (this.usageQueue.length >= USAGE_BATCH_MAX) {
+      this.flushUsage()
+      return
+    }
+    if (this.usageTimer !== undefined) return
+    this.usageTimer = setTimeout(() => {
+      this.usageTimer = undefined
+      this.flushUsage()
+    }, USAGE_FLUSH_MS)
+    this.usageTimer.unref?.()
+  }
+
+  /** 把队列中的用量事件批量写入 SQLite（同步、幂等）。 */
+  flushUsage(): void {
+    if (this.usageFlushing || this.usageQueue.length === 0) return
+    this.usageFlushing = true
+    const insert = this.db.prepare(
+      `INSERT INTO usage_events (
+         ts, api_key_id, provider_id, model, request_tokens, response_tokens,
+         total_tokens, status, duration_ms, streamed
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    )
+    try {
+      while (this.usageQueue.length > 0) {
+        const event = this.usageQueue.shift() as Omit<UsageEventRecord, 'id'>
+        insert.run(
+          event.ts,
+          event.apiKeyId ?? null,
+          event.providerId ?? null,
+          event.model ?? null,
+          event.requestTokens,
+          event.responseTokens,
+          event.totalTokens,
+          event.status,
+          event.durationMs,
+          event.streamed,
+        )
+      }
+    } finally {
+      this.usageFlushing = false
+    }
   }
 
   /** 汇总查询：时间、key、provider、模型均为可选过滤。 */
@@ -568,6 +614,7 @@ export class GatewayStore {
     providerId?: string
     model?: string
   }): UsageSummary {
+    this.flushUsage()
     const conditions: string[] = []
     const params: (number | string)[] = []
     if (options.from !== undefined) {
@@ -622,6 +669,7 @@ export class GatewayStore {
 
   /** 最近用量事件（管理台最近请求表，分页；options.total 传 true 时同时返回总条数）。 */
   recentUsage(options: { limit?: number; offset?: number; total?: boolean } = {}): { rows: UsageEventRecord[]; total: number } {
+    this.flushUsage()
     const limit = options.limit ?? 20
     const offset = options.offset ?? 0
     const rows = this.db
@@ -673,6 +721,7 @@ export class GatewayStore {
     responseTokens: number
     totalTokens: number
   }> {
+    this.flushUsage()
     const conditions: string[] = []
     const params: (number | string)[] = []
     if (options.from !== undefined) {
@@ -719,6 +768,7 @@ export class GatewayStore {
     success: number
     totalTokens: number
   }> {
+    this.flushUsage()
     const conditions: string[] = []
     const params: (number | string)[] = []
     if (options.from !== undefined) {
@@ -755,11 +805,17 @@ export class GatewayStore {
 
   /** 清理指定时间之前的用量事件，返回删除行数。 */
   pruneUsage(before: number): number {
+    this.flushUsage()
     const result = this.db.prepare('DELETE FROM usage_events WHERE ts < ?').run(before)
     return Number(result.changes)
   }
 
   close(): void {
+    if (this.usageTimer !== undefined) {
+      clearTimeout(this.usageTimer)
+      this.usageTimer = undefined
+    }
+    this.flushUsage()
     this.db.close()
   }
 }
