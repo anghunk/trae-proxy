@@ -845,6 +845,28 @@ export class GatewayStore {
     }))
   }
 
+  /** 返回 from 到 to 之间连续小时段（含两端），无数据的小时补零，用于 24 小时用量图表。 */
+  usageByHourContinuous(options: { from: number; to: number }): Array<{
+    hour: string
+    requests: number
+    success: number
+    totalTokens: number
+  }> {
+    const byHour = this.usageByHour(options)
+    const byHourMap = new Map(byHour.map(item => [item.hour, item]))
+    const result: Array<{ hour: string; requests: number; success: number; totalTokens: number }> = []
+    const cursor = new Date(options.from)
+    cursor.setMinutes(0, 0, 0)
+    const end = new Date(options.to)
+    end.setMinutes(0, 0, 0)
+    while (cursor.getTime() <= end.getTime()) {
+      const hour = `${cursor.getFullYear()}-${String(cursor.getMonth() + 1).padStart(2, '0')}-${String(cursor.getDate()).padStart(2, '0')} ${String(cursor.getHours()).padStart(2, '0')}:00`
+      result.push(byHourMap.get(hour) ?? { hour, requests: 0, success: 0, totalTokens: 0 })
+      cursor.setHours(cursor.getHours() + 1)
+    }
+    return result
+  }
+
   /** 清理指定时间之前的用量事件，返回删除行数。 */
   pruneUsage(before: number): number {
     this.flushUsage()

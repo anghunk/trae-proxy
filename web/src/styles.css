@@ -411,6 +411,10 @@ select:focus {
   margin-bottom: 20px;
 }
 
+.stat-grid + .stat-grid {
+  margin-top: 20px;
+}
+
 .stat-card {
   padding: 16px;
   border: 1px solid var(--border);
@@ -506,6 +510,23 @@ select:focus {
 .panel.editor {
   padding: 20px;
   overflow: visible;
+}
+
+.usage-today {
+  margin-bottom: 20px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg);
+  box-shadow: var(--shadow);
+}
+
+.usage-today .panel-head {
+  padding-bottom: 0;
+}
+
+.usage-today .stat-grid {
+  margin: 0;
+  padding: 16px 20px 20px;
 }
 
 .panel-head {

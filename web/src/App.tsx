@@ -1630,6 +1630,53 @@ function UsageView() {
   )
 }
 
+/** 固定显示当日用量汇总，独立于用量统计页的日期筛选。 */
+function TodayUsageCard() {
+  const dayKey = new Date().toLocaleDateString('en-CA')
+  const todayParams = useMemo(() => {
+    const start = new Date()
+    start.setHours(0, 0, 0, 0)
+    return { from: start.getTime() }
+  }, [dayKey])
+  const today = useAsync(() => api.usage(todayParams), [todayParams])
+  const todaySummary = today.data?.summary
+  const todaySuccessRate = todaySummary === undefined || todaySummary.requests === 0
+    ? '-'
+    : `${((todaySummary.success / todaySummary.requests) * 100).toFixed(1)}%`
+  return (
+    <section className="usage-today">
+      <div className="panel-head">
+        <h2>今日用量</h2>
+        <span className="panel-note">固定显示当天数据</span>
+      </div>
+      {today.loading && <Spinner label="加载中" />}
+      {today.error !== undefined && <div className="alert error">{today.error}</div>}
+      {!today.loading && today.data !== undefined && (
+        <div className="stat-grid">
+          <div className="stat-card">
+            <span className="stat-label">请求</span>
+            <span className="stat-value">{todaySummary === undefined ? '-' : formatNumber(todaySummary.requests)}</span>
+          </div>
+          <div className="stat-card">
+            <span className="stat-label">成功率</span>
+            <span className="stat-value">{todaySuccessRate}</span>
+          </div>
+          <div className="stat-card">
+            <span className="stat-label">Token</span>
+            <span className="stat-value">{todaySummary === undefined ? '-' : formatToken(todaySummary.totalTokens)}</span>
+          </div>
+          <div className="stat-card">
+            <span className="stat-label">平均耗时</span>
+            <span className="stat-value">
+              {todaySummary === undefined || todaySummary.requests === 0 ? '-' : formatMs(todaySummary.durationMs / todaySummary.requests)}
+            </span>
+          </div>
+        </div>
+      )}
+    </section>
+  )
+}
+
 function PasswordSettingsView() {
   const { data } = useAsync(() => api.settings(), [])
   const [username, setUsername] = useState('')
@@ -1875,6 +1922,7 @@ function Shell() {
           <h1>{topbarTitle}</h1>
           <span className="endpoint mono">{endpointUrl}</span>
         </header>
+        {view === 'usage' && <TodayUsageCard />}
         {view === 'overview' && (
           <Overview
             providers={providers.data?.data ?? []}

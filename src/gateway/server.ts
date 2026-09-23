@@ -1973,7 +1973,7 @@ export function createGatewayServer(options: GatewayServerOptions): GatewayServe
         summary: store.usageSummary({ ...range, ...(apiKeyId === undefined ? {} : { apiKeyId }), ...(providerId === undefined ? {} : { providerId }), ...(model === undefined ? {} : { model }) }),
         recent: store.recentUsage({ limit: recentLimit, offset: recentOffset, total: recentParams }),
         byDay: store.usageByDay(range),
-        byHour: store.usageByHour({ from: hourlyFrom.getTime(), to: hourlyTo }),
+        byHour: store.usageByHourContinuous({ from: hourlyFrom.getTime(), to: hourlyTo }),
         byProvider: store.usageBreakdown('provider_id', range),
         byKey: store.usageBreakdown('api_key_id', range),
         byModel: store.usageBreakdown('model', range),
