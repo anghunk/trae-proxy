@@ -131,17 +131,50 @@ interface UsageBarItem {
   totalTokens: number
 }
 
-/** 用量柱状图：悬停时展示请求、成功率和 Token 明细。 */
-function UsageBarChart({ items }: { items: UsageBarItem[] }) {
-  const max = Math.max(...items.map(item => item.totalTokens), 1)
+/**
+ * 用量柱状图：悬停时展示请求、成功率和 Token 明细。
+ *
+ * groupSize 大于 1 时，相邻柱会合并成一格展示；同一格内的用量会求和，
+ * 标签只取该组第一条记录，明细则用「起止时间」表示，便于一格容纳两个
+ * 小时而不出现横向滚动条。
+ */
+function UsageBarChart({ items, groupSize = 1, fit = false }: {
+  items: UsageBarItem[]
+  groupSize?: number
+  fit?: boolean
+}) {
+  const groups = useMemo<UsageBarItem[]>(() => {
+    if (groupSize <= 1) return items
+    const result: UsageBarItem[] = []
+    for (let index = 0; index < items.length; index += groupSize) {
+      const chunk = items.slice(index, index + groupSize)
+      const first = chunk[0]
+      const last = chunk[chunk.length - 1]
+      const groupEndHour = String((Number(last.label.slice(0, 2)) + 1) % 24).padStart(2, '0')
+      result.push({
+        id: `${first.id}-${last.id}`,
+        label: chunk.length === 1 ? first.label : `${first.label}-${groupEndHour}:00`,
+        detail: chunk.length === 1 ? first.detail : `${first.detail} - ${last.detail}`,
+        requests: chunk.reduce((sum, item) => sum + item.requests, 0),
+        success: chunk.reduce((sum, item) => sum + item.success, 0),
+        totalTokens: chunk.reduce((sum, item) => sum + item.totalTokens, 0),
+      })
+    }
+    return result
+  }, [groupSize, items])
+  const max = Math.max(...groups.map(item => item.totalTokens), 1)
   return (
-    <div className="bar-chart">
-      {items.map(item => {
+    <div className={`bar-chart${fit ? ' fit' : ''}`}>
+      {groups.map(item => {
         const successRate = item.requests === 0 ? '-' : `${((item.success / item.requests) * 100).toFixed(1)}%`
         return (
           <div className="bar-col" key={item.id}>
             <div className="bar-tooltip" role="tooltip">
-              <span className="bar-tooltip-title">{item.detail}</span>
+              <span className="bar-tooltip-title">
+                {groupSize > 1 && groups.length > 1
+                  ? `${item.detail.split(' - ')[0].slice(0, 10)} ${item.label}`
+                  : item.detail}
+              </span>
               <span className="bar-tooltip-row"><span>请求</span><strong>{formatNumber(item.requests)}</strong></span>
               <span className="bar-tooltip-row"><span>成功率</span><strong>{successRate}</strong></span>
               <span className="bar-tooltip-row"><span>Token</span><strong>{formatToken(item.totalTokens)}</strong></span>
@@ -1521,6 +1554,8 @@ function UsageView() {
               <div className="empty">暂无数据</div>
             ) : (
               <UsageBarChart
+                fit
+                groupSize={2}
                 items={data.byHour.map(item => ({
                   id: item.hour,
                   label: item.hour.slice(11),

@@ -1003,6 +1003,15 @@ tbody tr:hover {
   overflow-x: auto;
 }
 
+.bar-chart.fit {
+  overflow-x: hidden;
+}
+
+.bar-chart.fit .bar-col {
+  flex: 1 1 0;
+  min-width: 0;
+}
+
 .bar-col {
   position: relative;
   display: flex;
