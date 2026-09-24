@@ -57,6 +57,8 @@ export interface UpstreamProvider {
   ): Promise<GatewayChatResult | GatewayChatFailure>
   /** 可选：返回面向管理台的运行状态（Trae 登录态等）。 */
   status?(): Promise<unknown>
+  /** 可选：释放 provider 持有的子进程 / 连接等资源。 */
+  close?(): void | Promise<void>
 }
 
 export interface ProviderRegistryOptions {
@@ -143,13 +145,17 @@ export class ProviderRegistry {
   }
 
   register(provider: UpstreamProvider): void {
+    const previous = this.providers.get(provider.id)
     this.providers.set(provider.id, provider)
+    if (previous !== undefined && previous !== provider) this.closeProvider(previous)
   }
 
   unregister(id: string): void {
+    const provider = this.providers.get(id)
     this.providers.delete(id)
     this.modelCache.delete(id)
     this.refreshInflight.delete(id)
+    if (provider !== undefined) this.closeProvider(provider)
   }
 
   get(id: string): UpstreamProvider | undefined {
@@ -244,7 +250,18 @@ export class ProviderRegistry {
   }
 
   async close(): Promise<void> {
-    // 预留：将来 provider 可持有连接/定时器。
+    const providers = [...this.providers.values()]
+    this.providers.clear()
+    this.modelCache.clear()
+    this.refreshInflight.clear()
+    await Promise.all(providers.map(provider => Promise.resolve(provider.close?.())))
+  }
+
+  /** 关闭被替换或移除的 provider，避免子进程和定时器泄漏。 */
+  private closeProvider(provider: UpstreamProvider): void {
+    void Promise.resolve(provider.close?.()).catch((error: unknown) => {
+      this.logger?.('provider close failed', { providerId: provider.id, error: String(error) })
+    })
   }
 }
 

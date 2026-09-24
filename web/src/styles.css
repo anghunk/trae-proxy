@@ -449,6 +449,91 @@ select:focus {
   margin: -8px 0 16px;
 }
 
+.call-formats-head {
+  align-items: flex-start;
+}
+
+.call-formats-head > div {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.call-formats-head .panel-note {
+  line-height: 1.4;
+}
+
+.call-formats {
+  display: flex;
+  flex-direction: column;
+}
+
+.call-format {
+  display: grid;
+  grid-template-columns: auto 180px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  min-height: 48px;
+  padding: 10px 20px;
+  border-top: 1px solid var(--border);
+}
+
+.method-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 40px;
+  height: 20px;
+  padding: 0 6px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--bg-subtle);
+  color: var(--text-secondary);
+  font-family: 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 10px;
+  font-weight: 600;
+}
+
+.method-badge.post {
+  border-color: var(--border-strong);
+  color: var(--text);
+}
+
+.call-format-path {
+  color: var(--text);
+  white-space: nowrap;
+}
+
+.call-format-description {
+  min-width: 0;
+  color: var(--text-tertiary);
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.call-format-description > span {
+  margin-right: 6px;
+  color: var(--text-secondary);
+}
+
+.call-format-copy {
+  justify-self: end;
+  color: var(--text-tertiary);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.call-format-copy:hover {
+  color: var(--text);
+}
+
+.call-format-copy.copied {
+  color: var(--success);
+}
+
 .usage-rows {
   display: flex;
   flex-direction: column;
@@ -1409,6 +1494,18 @@ tbody tr:hover {
     grid-template-columns: 1fr;
   }
 
+  .call-format {
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    gap: 8px 10px;
+    padding-top: 12px;
+    padding-bottom: 12px;
+  }
+
+  .call-format-description {
+    grid-column: 2 / -1;
+    white-space: normal;
+  }
+
   .channel-grid {
     grid-template-columns: 1fr;
   }
@@ -1423,6 +1520,10 @@ tbody tr:hover {
   .topbar {
     align-items: flex-start;
     flex-direction: column;
+  }
+
+  .call-formats-head {
+    flex-wrap: wrap;
   }
 
   .form-grid {

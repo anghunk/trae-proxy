@@ -2,7 +2,7 @@
  * trae-proxy 统一网关入口。
  *
  * 默认在 127.0.0.1:39310 启动统一 OpenAI 兼容网关 + React 配置台：
- * - 首次启动自动初始化 SQLite（config/trae-proxy.db）并注册默认 Trae providers；
+ * - 首次启动自动初始化 SQLite（config/trae-proxy.db）并注册默认 Trae / Ollama providers；
  * - 定时刷新各 provider 模型目录、清理过期会话；用量明细永久保留；
  * - 管理台保存配置后立即热生效。
  *
@@ -36,7 +36,7 @@ const logger = {
   },
 }
 
-/** 首次启动写入内置 Trae provider 记录（不覆盖用户已有配置）。 */
+/** 首次启动写入内置 Trae / Ollama provider 记录（不覆盖用户已有配置）。 */
 function seedDefaultProviders(store: ReturnType<typeof openGatewayStore>): void {
   const now = Date.now()
   const seeds: Array<Omit<ProviderRecord, 'createdAt' | 'updatedAt'>> = [
@@ -54,6 +54,16 @@ function seedDefaultProviders(store: ReturnType<typeof openGatewayStore>): void 
       type: 'trae-ai',
       name: 'Trae 国际',
       enabled: 1,
+      extraHeaders: '{}',
+      models: '[]',
+      settings: '{}',
+    },
+    {
+      id: 'ollama',
+      type: 'ollama',
+      name: '本地 Ollama',
+      enabled: 1,
+      baseUrl: 'http://127.0.0.1:11434/v1',
       extraHeaders: '{}',
       models: '[]',
       settings: '{}',

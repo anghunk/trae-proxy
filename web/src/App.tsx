@@ -57,7 +57,7 @@ const TYPE_HINT: Record<Provider['type'], string> = {
   openai: '任意 OpenAI 兼容服务',
   anthropic: 'Anthropic Messages API',
   gemini: 'Google Gemini API',
-  ollama: '本地 Ollama',
+  ollama: '本地 Ollama（未运行时自动调用 CLI）',
 }
 
 const TYPE_DEFAULT: Record<Provider['type'], { baseUrl: string; needsKey: boolean; models: string[] }> = {
@@ -88,7 +88,7 @@ const OFFICIAL_PRESETS: OfficialPreset[] = [
   { id: 'openrouter', name: 'OpenRouter', type: 'openai', baseUrl: 'https://openrouter.ai/api/v1', needsKey: true, models: ['anthropic/claude-3.5-sonnet'], hint: '聚合多厂商模型' },
   { id: 'anthropic', name: 'Anthropic 官方', type: 'anthropic', baseUrl: 'https://api.anthropic.com', needsKey: true, models: ['claude-3-5-sonnet-latest'], hint: 'Claude 系列' },
   { id: 'gemini', name: 'Google Gemini', type: 'gemini', baseUrl: 'https://generativelanguage.googleapis.com', needsKey: true, models: ['gemini-2.0-flash'], hint: 'Gemini 系列' },
-  { id: 'ollama', name: '本地 Ollama', type: 'ollama', baseUrl: 'http://127.0.0.1:11434/v1', needsKey: false, models: ['llama3.1'], hint: '本地模型' },
+  { id: 'ollama', name: '本地 Ollama', type: 'ollama', baseUrl: 'http://127.0.0.1:11434/v1', needsKey: false, models: ['llama3.1'], hint: '自动调用本机 CLI' },
 ]
 
 function formatNumber(value: number): string {
@@ -376,6 +376,91 @@ function AuthScreen({ onDone }: { onDone: () => void }) {
   )
 }
 
+interface CallFormat {
+  id: string
+  name: string
+  method: 'GET' | 'POST'
+  path: string
+  description: string
+}
+
+/**
+ * 概览页调用格式说明。
+ *
+ * 复制按钮统一写入当前管理台域名与 HTTP 路径，不包含任何凭据。
+ */
+function CallFormatPanel() {
+  const origin = window.location.origin
+  const [copied, setCopied] = useState<string | undefined>(undefined)
+  const formats: CallFormat[] = [
+    {
+      id: 'models',
+      name: '模型列表',
+      method: 'GET',
+      path: '/v1/models',
+      description: '获取当前 API Key 可访问的模型',
+    },
+    {
+      id: 'chat',
+      name: 'Chat Completions',
+      method: 'POST',
+      path: '/v1/chat/completions',
+      description: 'OpenAI 对话格式，支持 SSE 流式返回',
+    },
+    {
+      id: 'responses',
+      name: 'Responses API',
+      method: 'POST',
+      path: '/v1/responses',
+      description: 'OpenAI Responses 格式，适配 Codex',
+    },
+  ]
+
+  const copyAddress = async (format: CallFormat): Promise<void> => {
+    try {
+      await navigator.clipboard.writeText(`${origin}${format.path}`)
+      setCopied(format.id)
+      window.setTimeout(() => {
+        setCopied(current => (current === format.id ? undefined : current))
+      }, 2000)
+    } catch {
+      setCopied(undefined)
+    }
+  }
+
+  return (
+    <div className="panel">
+      <div className="panel-head call-formats-head">
+        <div>
+          <h2>支持的调用格式</h2>
+          <div className="panel-note">OpenAI 兼容接口，认证头 Authorization: Bearer &lt;API_KEY&gt;</div>
+        </div>
+        <code className="mono endpoint">{origin}/v1</code>
+      </div>
+      <div className="call-formats">
+        {formats.map(format => (
+          <div className="call-format" key={format.id}>
+            <span className={`method-badge ${format.method.toLowerCase()}`}>{format.method}</span>
+            <code className="mono call-format-path">{format.path}</code>
+            <span className="call-format-description">
+              <span>{format.name} ·</span>
+              {format.description}
+            </span>
+            <button
+              type="button"
+              className={`text-button call-format-copy${copied === format.id ? ' copied' : ''}`}
+              onClick={() => { void copyAddress(format) }}
+              aria-label={`复制 ${format.method} ${format.path} 地址`}
+            >
+              {copied === format.id ? '已复制' : '复制地址'}
+            </button>
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
 function Overview({ providers, dashboard, onRefresh }: {
   providers: Provider[]
   dashboard: Dashboard | undefined
@@ -406,6 +491,7 @@ function Overview({ providers, dashboard, onRefresh }: {
       <div className="overview-actions">
         <button className="secondary compact" onClick={onRefresh}>刷新</button>
       </div>
+      <CallFormatPanel />
       <div className="usage-mini-grid">
         <div className="panel">
           <div className="panel-head">

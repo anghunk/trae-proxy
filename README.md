@@ -8,7 +8,7 @@
 
 特性：
 
-- **开箱即用**：首次启动自动注册国内 / 国际 Trae provider，读取本机登录态；
+- **开箱即用**：首次启动自动注册国内 / 国际 Trae 与本地 Ollama provider，读取本机登录态；
 - **统一端点**：所有 provider 共用 `/v1/models` 与 `/v1/chat/completions`；
 - **模型带前缀**：如 `trae-cn/glm-5.3`；
 - **保存即生效**：管理台修改后无需重启；
@@ -21,6 +21,7 @@
 
 - Node.js 22.19+ 或 24+，零第三方依赖；
 - 本机已安装并登录 Trae / TRAE SOLO CN 桌面端（登录态只读）；
+- 使用本地 Ollama 时需安装 `ollama` CLI，网关会在服务未运行时自动调用 CLI 启动；
 - 前端需构建一次：`npm install` 后执行 `npm run build`。
 
 Trae 登录态按区域自动探测，见 `src/paths.ts`。
@@ -63,7 +64,7 @@ curl http://127.0.0.1:39310/v1/chat/completions \
 | `openai` | 任意 OpenAI 兼容服务（DeepSeek、OpenRouter、vLLM 等） |
 | `anthropic` | Anthropic Messages API |
 | `gemini` | Google Gemini API |
-| `ollama` | 本地 Ollama |
+| `ollama` | 本地 Ollama，服务未运行时自动调用本机 CLI |
 
 > 上游 API key 明文存于本地 SQLite；管理员密码与网关 API key 只存哈希。
 
@@ -84,6 +85,7 @@ TRAE_PROXY_KEY=tr-xxxxxxxx node scripts/inject-config.cjs
 | `TRAE_PROXY_PORT` | `39310` | 网关端口 |
 | `TRAE_PROXY_HOST` | `127.0.0.1` | 监听地址 |
 | `TRAE_PROXY_USAGE_RETENTION_DAYS` | `180` | 用量明细保留天数，`0` 表示永久保留 |
+| `OLLAMA_BIN` | 自动探测 | `ollama` CLI 可执行文件路径 |
 
 ## 安全
 
@@ -100,4 +102,5 @@ TRAE_PROXY_KEY=tr-xxxxxxxx node scripts/inject-config.cjs
 | `401` | 使用管理台创建的 API key |
 | `403` | key 的可访问范围未包含目标 provider |
 | `404` 模型未知 | 模型 id 需带前缀，如 `trae-cn/glm-5.3` |
+| Ollama 模型为空 | 安装 `ollama` CLI 并执行 `ollama pull <model>`；网关会自动探测常见安装位置 |
 | 前端空白 | 先 `npm run build` 再访问管理台 |

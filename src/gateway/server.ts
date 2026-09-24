@@ -2090,7 +2090,13 @@ export function createGatewayServer(options: GatewayServerOptions): GatewayServe
     baseUrl: () => `http://${host}:${port}`,
     close: () => new Promise<void>((resolveClose, rejectClose) => {
       for (const socket of sockets) socket.destroy()
-      server.close(error => error === undefined ? resolveClose() : rejectClose(error))
+      server.close(error => {
+        if (error !== undefined) {
+          rejectClose(error)
+          return
+        }
+        void registry.close().then(resolveClose, rejectClose)
+      })
     }),
     reloadProviders,
     refreshAllModels,
