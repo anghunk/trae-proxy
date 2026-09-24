@@ -725,23 +725,28 @@ export class GatewayStore {
     const conditions: string[] = []
     const params: (number | string)[] = []
     if (options.from !== undefined) {
-      conditions.push('ts >= ?')
+      conditions.push('usage_events.ts >= ?')
       params.push(options.from)
     }
     if (options.to !== undefined) {
-      conditions.push('ts <= ?')
+      conditions.push('usage_events.ts <= ?')
       params.push(options.to)
     }
     const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : ''
+    // 按密钥统计时只保留仍存在的密钥；已删除密钥的历史事件不再计入分组结果。
+    const from = column === 'api_key_id'
+      ? 'FROM usage_events INNER JOIN api_keys ON api_keys.id = usage_events.api_key_id'
+      : 'FROM usage_events'
+    const keyExpression = column === 'api_key_id' ? 'usage_events.api_key_id' : `usage_events.${column}`
     const rows = this.db
       .prepare(
-        `SELECT ${column} AS key, COUNT(*) AS requests,
+        `SELECT ${keyExpression} AS key, COUNT(*) AS requests,
                 SUM(CASE WHEN status >= 200 AND status < 400 THEN 1 ELSE 0 END) AS success,
                 COALESCE(SUM(request_tokens), 0) AS request_tokens,
                 COALESCE(SUM(response_tokens), 0) AS response_tokens,
                 COALESCE(SUM(total_tokens), 0) AS total_tokens
-         FROM usage_events ${where}
-         GROUP BY ${column} ORDER BY requests DESC`,
+         ${from} ${where}
+         GROUP BY ${keyExpression} ORDER BY requests DESC`,
       )
       .all(...params) as {
       key: string | null

@@ -1564,6 +1564,17 @@ function UsageView() {
     () => api.usage(rangeParams, { limit: PAGE_SIZE, offset: (page - 1) * PAGE_SIZE }),
     [rangeParams, page],
   )
+  const { data: keysData } = useAsync(() => api.apiKeys(), [])
+  const keyMap = useMemo(
+    () => new Map((keysData?.data ?? []).map(key => [key.id, key])),
+    [keysData],
+  )
+  /** 把用量事件里的密钥 id 映射为可读名称；密钥已删除时展示短 id 便于排查。 */
+  const keyLabel = (id: string | null | undefined): string => {
+    if (id === null || id === undefined || id === '') return '-'
+    const key = keyMap.get(id)
+    return key === undefined ? `已删除密钥 (${id.slice(0, 8)})` : key.name
+  }
   const summary = useMemo(() => data?.summary, [data])
   const recent = data?.recent
   const totalPages = recent === undefined || recent.total === 0 ? 0 : Math.max(1, Math.ceil(recent.total / PAGE_SIZE))
@@ -1655,6 +1666,41 @@ function UsageView() {
           </div>
           <div className="panel">
             <div className="panel-head">
+              <h2>密钥用量</h2>
+            </div>
+            {data.byKey.length === 0 ? (
+              <div className="empty">暂无数据</div>
+            ) : (
+              <div className="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>密钥</th>
+                      <th>请求</th>
+                      <th>成功率</th>
+                      <th>Token</th>
+                      <th>输入 Token</th>
+                      <th>输出 Token</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {data.byKey.map(item => (
+                      <tr key={item.key ?? '-'}>
+                        <td title={item.key ?? undefined}>{keyLabel(item.key)}</td>
+                        <td>{formatNumber(item.requests)}</td>
+                        <td>{item.requests === 0 ? '-' : `${((item.success / item.requests) * 100).toFixed(1)}%`}</td>
+                        <td>{formatToken(item.totalTokens)}</td>
+                        <td>{formatToken(item.requestTokens)}</td>
+                        <td>{formatToken(item.responseTokens)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+          <div className="panel">
+            <div className="panel-head">
               <h2>模型用量</h2>
             </div>
             {data.byModel.length === 0 ? (
@@ -1698,6 +1744,7 @@ function UsageView() {
                 <thead>
                   <tr>
                     <th>时间</th>
+                    <th>密钥</th>
                     <th>模型</th>
                     <th>状态</th>
                     <th>Token</th>
@@ -1709,6 +1756,7 @@ function UsageView() {
                   {(recent?.rows ?? []).map(row => (
                     <tr key={row.id}>
                       <td>{formatDate(row.ts)}</td>
+                      <td title={row.apiKeyId}>{keyLabel(row.apiKeyId)}</td>
                       <td><span className="mono">{row.model ?? '-'}</span></td>
                       <td>
                         <span className={row.status >= 200 && row.status < 400 ? 'badge success' : 'badge error'}>
