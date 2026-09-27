@@ -107,6 +107,30 @@ function formatToken(value: number): string {
   return formatNumber(value)
 }
 
+/** 返回 1/2/5 序列中的整齐刻度步长。 */
+function niceAxisStep(range: number): number {
+  if (range <= 0) return 1
+  const roughStep = range / 4
+  const magnitude = 10 ** Math.floor(Math.log10(roughStep))
+  const normalized = roughStep / magnitude
+  const niceNormalized = normalized <= 1 ? 1 : normalized <= 2 ? 2 : normalized <= 5 ? 5 : 10
+  return niceNormalized * magnitude
+}
+
+/** Y 轴刻度使用整齐的万/亿单位，例如 500w、1000w、1.5亿。 */
+function formatAxisToken(value: number): string {
+  const rounded = Math.round(value)
+  const abs = Math.abs(rounded)
+  if (abs >= 100_000_000) {
+    const yi = rounded / 100_000_000
+    return Number.isInteger(yi) ? `${yi}亿` : `${yi.toFixed(1)}亿`
+  }
+  if (abs >= 10_000) {
+    return `${Math.round(rounded / 10_000)}w`
+  }
+  return formatNumber(rounded)
+}
+
 function formatMs(value: number): string {
   if (value < 1000) return `${Math.round(value)} ms`
   return `${(value / 1000).toFixed(1)} s`
@@ -162,9 +186,23 @@ function UsageBarChart({ items, groupSize = 1, fit = false }: {
     }
     return result
   }, [groupSize, items])
-  const max = Math.max(...groups.map(item => item.totalTokens), 1)
+  const dataMax = Math.max(...groups.map(item => item.totalTokens), 0)
+  const axisStep = Math.max(1, niceAxisStep(dataMax))
+  const axisMax = dataMax > 0 ? Math.ceil(dataMax / axisStep) * axisStep : 0
+  const max = Math.max(axisMax, 1)
+  const axisTicks = axisMax > 0
+    ? Array.from({ length: axisMax / axisStep + 1 }, (_, index) => axisMax - index * axisStep)
+    : [0]
   return (
     <div className={`bar-chart${fit ? ' fit' : ''}`}>
+      <div className="bar-axis" aria-label="Token 用量">
+        <span className="bar-axis-unit">Token</span>
+        <div className={`bar-axis-ticks${axisTicks.length === 1 ? ' single' : ''}`}>
+          {axisTicks.map(value => (
+            <span key={value}>{formatAxisToken(value)}</span>
+          ))}
+        </div>
+      </div>
       {groups.map(item => {
         const successRate = item.requests === 0 ? '-' : `${((item.success / item.requests) * 100).toFixed(1)}%`
         return (
@@ -182,7 +220,11 @@ function UsageBarChart({ items, groupSize = 1, fit = false }: {
             <div className="bar-track">
               <div
                 className="bar-fill"
-                style={{ height: `${Math.max(4, (item.totalTokens / max) * 100)}%` }}
+                style={{
+                  height: item.totalTokens <= 0
+                    ? '0%'
+                    : `${Math.max(4, (item.totalTokens / max) * 100)}%`,
+                }}
               />
             </div>
             <span className="bar-label">{item.label}</span>
@@ -508,11 +550,13 @@ function Overview({ providers, dashboard, onRefresh }: {
                     <span className="usage-row-value">{formatToken(row.totalTokens)}</span>
                   </div>
                   <div className="usage-bar">
-                    <div
-                      className="usage-bar-fill"
-                      style={{ width: `${maxModelTokens === 0 ? 0 : Math.max(2, (row.totalTokens / maxModelTokens) * 100)}%` }}
-                      title={`${row.requests} 次请求`}
-                    />
+                    {row.totalTokens > 0 && (
+                      <div
+                        className="usage-bar-fill"
+                        style={{ width: `${Math.max(2, (row.totalTokens / maxModelTokens) * 100)}%` }}
+                        title={`${row.requests} 次请求`}
+                      />
+                    )}
                   </div>
                 </div>
               ))}
@@ -536,11 +580,13 @@ function Overview({ providers, dashboard, onRefresh }: {
                     </span>
                   </div>
                   <div className="usage-bar">
-                    <div
-                      className="usage-bar-fill"
-                      style={{ width: `${maxProviderTokens === 0 ? 0 : Math.max(2, (row.totalTokens / maxProviderTokens) * 100)}%` }}
-                      title={`${formatToken(row.totalTokens)} tokens`}
-                    />
+                    {row.totalTokens > 0 && (
+                      <div
+                        className="usage-bar-fill"
+                        style={{ width: `${Math.max(2, (row.totalTokens / maxProviderTokens) * 100)}%` }}
+                        title={`${formatToken(row.totalTokens)} tokens`}
+                      />
+                    )}
                   </div>
                 </div>
               ))}

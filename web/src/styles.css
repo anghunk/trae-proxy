@@ -601,7 +601,7 @@ select:focus {
   margin-bottom: 20px;
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  background: var(--bg);
+  background: var(--bg-subtle);
   box-shadow: var(--shadow);
 }
 
@@ -1081,7 +1081,7 @@ tbody tr:hover {
 
 .bar-chart {
   display: flex;
-  align-items: flex-end;
+  align-items: stretch;
   gap: 8px;
   height: 220px;
   padding: 20px;
@@ -1095,6 +1095,40 @@ tbody tr:hover {
 .bar-chart.fit .bar-col {
   flex: 1 1 0;
   min-width: 0;
+}
+
+.bar-axis {
+  position: relative;
+  display: flex;
+  flex: 0 0 auto;
+  flex-direction: column;
+  height: 100%;
+  min-width: 48px;
+  padding-bottom: 24px;
+  color: var(--text-tertiary);
+  font-size: 10px;
+  line-height: 1;
+}
+
+.bar-axis-unit {
+  position: absolute;
+  top: -14px;
+  right: 0;
+  color: var(--text-tertiary);
+  font-size: 10px;
+}
+
+.bar-axis-ticks {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  align-items: flex-end;
+  justify-content: space-between;
+  white-space: nowrap;
+}
+
+.bar-axis-ticks.single {
+  justify-content: flex-end;
 }
 
 .bar-col {
