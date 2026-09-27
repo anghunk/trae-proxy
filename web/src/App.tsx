@@ -126,7 +126,7 @@ function formatAxisToken(value: number): string {
     return Number.isInteger(yi) ? `${yi}亿` : `${yi.toFixed(1)}亿`
   }
   if (abs >= 10_000) {
-    return `${Math.round(rounded / 10_000)}w`
+    return `${Math.round(rounded / 10_000)}万`
   }
   return formatNumber(rounded)
 }
@@ -195,8 +195,7 @@ function UsageBarChart({ items, groupSize = 1, fit = false }: {
     : [0]
   return (
     <div className={`bar-chart${fit ? ' fit' : ''}`}>
-      <div className="bar-axis" aria-label="Token 用量">
-        <span className="bar-axis-unit">Token</span>
+      <div className="bar-axis" aria-label="用量刻度">
         <div className={`bar-axis-ticks${axisTicks.length === 1 ? ' single' : ''}`}>
           {axisTicks.map(value => (
             <span key={value}>{formatAxisToken(value)}</span>

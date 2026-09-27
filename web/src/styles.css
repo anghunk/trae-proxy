@@ -1110,14 +1110,6 @@ tbody tr:hover {
   line-height: 1;
 }
 
-.bar-axis-unit {
-  position: absolute;
-  top: -14px;
-  right: 0;
-  color: var(--text-tertiary);
-  font-size: 10px;
-}
-
 .bar-axis-ticks {
   display: flex;
   flex: 1;
