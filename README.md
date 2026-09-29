@@ -17,6 +17,10 @@
 
 > 本项目参考（改写自）[dingminhua/dsh-connect-trae](https://github.com/dingminhua/dsh-connect-trae)（MIT，Copyright (c) 2026 LaoDing）及 [weixiaokuan123/trae-proxy](https://github.com/weixiaokuan123/trae-proxy)（MIT，Copyright (c) 2026 weixiaokuan123），只读 Trae 登录态，不提供账号切换。
 
+<img width="2612" height="1332" alt="image" src="https://github.com/user-attachments/assets/3bda1374-9558-4515-a5ba-26a992ded6cf" />
+
+<img width="2612" height="1332" alt="image" src="https://github.com/user-attachments/assets/851422a8-f7ae-4260-8cb1-764d0f202426" />
+
 ## 运行要求
 
 - Node.js 22.19+ 或 24+，零第三方依赖；
