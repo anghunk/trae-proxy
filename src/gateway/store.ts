@@ -744,7 +744,7 @@ export class GatewayStore {
     return { rows: mapped, total: Number(total.n) }
   }
 
-  /** 返回使用日志筛选器需要的密钥与模型选项，包含已删除密钥的历史记录。 */
+  /** 返回使用日志筛选器需要的密钥与模型选项，已删除密钥不计入密钥筛选。 */
   usageLogOptions(): {
     apiKeys: Array<{ id: string; name?: string }>
     models: string[]
@@ -754,7 +754,7 @@ export class GatewayStore {
       .prepare(
         `SELECT DISTINCT usage_events.api_key_id AS id, api_keys.name
          FROM usage_events
-         LEFT JOIN api_keys ON api_keys.id = usage_events.api_key_id
+         INNER JOIN api_keys ON api_keys.id = usage_events.api_key_id
          WHERE usage_events.api_key_id IS NOT NULL AND usage_events.api_key_id <> ''
          ORDER BY api_keys.name COLLATE NOCASE, usage_events.api_key_id`,
       )

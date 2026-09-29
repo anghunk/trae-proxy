@@ -2158,7 +2158,7 @@ function UsageLogsView() {
       ...(status === '' ? {} : { status }),
     }
   }, [fromDate, toDate, apiKeyId, model, status])
-  const { data, error, loading, reload } = useAsync(
+  const { data, error, loading } = useAsync(
     () => api.usageLogs({ ...filterParams, limit: pageSize, offset: (page - 1) * pageSize }),
     [page, filterParams],
   )
@@ -2214,17 +2214,6 @@ function UsageLogsView() {
 
   return (
     <section>
-      <PageActions>
-        <Button
-          icon={<ReloadOutlined />}
-          onClick={() => {
-            reload()
-            keyOptions.reload()
-          }}
-        >
-          刷新
-        </Button>
-      </PageActions>
       <Card className="page-card">
         <Form layout="inline" className="log-filters">
           <Form.Item label="日期">
@@ -2614,7 +2603,7 @@ function Shell({ theme, onToggleTheme }: {
       />
       <Layout>
         <Layout.Header className="topbar">
-          <Title level={3} style={{ margin: 0 }}>{topbarTitle}</Title>
+          <Title level={4} style={{ margin: 0 }}>{topbarTitle}</Title>
           <Text code>{endpointUrl}</Text>
         </Layout.Header>
         <Layout.Content className="content">
