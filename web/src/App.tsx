@@ -9,6 +9,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import type { FormEvent } from 'react'
 import { api, type ApiKey, type Dashboard, type Provider } from './api.ts'
+import { useTheme, type Theme } from './theme.ts'
 
 type View = 'overview' | 'providers' | 'keys' | 'usage' | 'provider-detail' | 'settings-password' | 'settings-gateway'
 
@@ -524,7 +525,49 @@ function useAsync<T>(fn: () => Promise<T>, deps: unknown[]): { data: T | undefin
   return { data, error, loading, reload: () => setTick(value => value + 1) }
 }
 
-function AuthScreen({ onDone }: { onDone: () => void }) {
+/** 主题切换按钮：在明亮与黑夜之间切换，偏好由 useTheme 持久化。 */
+function ThemeToggle({ theme, onToggle, floating = false }: {
+  theme: Theme
+  onToggle: () => void
+  floating?: boolean
+}) {
+  const target = theme === 'dark' ? '明亮' : '黑夜'
+  const label = `切换到${target}主题`
+  return (
+    <button
+      type="button"
+      className={floating ? 'theme-toggle floating' : 'theme-toggle'}
+      onClick={onToggle}
+      title={label}
+      aria-label={label}
+    >
+      {theme === 'dark' ? <SunIcon /> : <MoonIcon />}
+    </button>
+  )
+}
+
+function SunIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" aria-hidden="true">
+      <circle cx="12" cy="12" r="5" />
+      <path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42" />
+    </svg>
+  )
+}
+
+function MoonIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" />
+    </svg>
+  )
+}
+
+function AuthScreen({ onDone, theme, onToggleTheme }: {
+  onDone: () => void
+  theme: Theme
+  onToggleTheme: () => void
+}) {
   const [mode, setMode] = useState<'setup' | 'login'>('setup')
   const [username, setUsername] = useState('admin')
   const [password, setPassword] = useState('')
@@ -565,6 +608,7 @@ function AuthScreen({ onDone }: { onDone: () => void }) {
 
   return (
     <div className="auth-shell">
+      <ThemeToggle theme={theme} onToggle={onToggleTheme} floating />
       <form className="auth-card" onSubmit={event => { void submit(event) }}>
         <img className="brand-mark" src="/logo.png" alt="Trae Proxy" />
         <h1>{mode === 'setup' ? '创建管理员' : '登录管理台'}</h1>
@@ -2207,10 +2251,12 @@ function GatewaySettingsView() {
   )
 }
 
-function Sidebar({ view, onView, onLogout }: {
+function Sidebar({ view, onView, onLogout, theme, onToggleTheme }: {
   view: View
   onView: (view: View) => void
   onLogout: () => void
+  theme: Theme
+  onToggleTheme: () => void
 }) {
   const settingsActive = view === 'settings-password' || view === 'settings-gateway'
   return (
@@ -2236,6 +2282,9 @@ function Sidebar({ view, onView, onLogout }: {
           </button>
         ))}
       </nav>
+      <div className="sidebar-actions">
+        <ThemeToggle theme={theme} onToggle={onToggleTheme} />
+      </div>
       <div className="sidebar-foot">
         <span className="dot" />
         <span>{window.location.port || '39310'}</span>
@@ -2273,7 +2322,10 @@ function SecondaryNav({ items, activeId, onSelect }: {
   )
 }
 
-function Shell() {
+function Shell({ theme, onToggleTheme }: {
+  theme: Theme
+  onToggleTheme: () => void
+}) {
   const [view, setView] = useState<View>(viewFromPath)
   const providers = useAsync(() => api.providers(), [])
   const dashboard = useAsync(() => api.dashboard(), [])
@@ -2311,7 +2363,13 @@ function Shell() {
 
   return (
     <div className={`shell${settingsActive ? ' has-secondary' : ''}`}>
-      <Sidebar view={view} onView={setView} onLogout={() => { void logout() }} />
+      <Sidebar
+        view={view}
+        onView={setView}
+        theme={theme}
+        onToggleTheme={onToggleTheme}
+        onLogout={() => { void logout() }}
+      />
       {settingsActive && (
         <SecondaryNav
           items={SETTING_VIEWS}
@@ -2357,6 +2415,7 @@ function Shell() {
 export function App() {
   const [authed, setAuthed] = useState(false)
   const [checking, setChecking] = useState(true)
+  const { theme, toggleTheme } = useTheme()
   useEffect(() => {
     api.session()
       .then(session => {
@@ -2372,10 +2431,14 @@ export function App() {
     return <div className="app-loading"><Spinner label="正在连接网关" /></div>
   }
   if (!authed) {
-    return <AuthScreen onDone={() => {
-      setAuthed(true)
-      setChecking(false)
-    }} />
+    return <AuthScreen
+      theme={theme}
+      onToggleTheme={toggleTheme}
+      onDone={() => {
+        setAuthed(true)
+        setChecking(false)
+      }}
+    />
   }
-  return <Shell />
+  return <Shell theme={theme} onToggleTheme={toggleTheme} />
 }
