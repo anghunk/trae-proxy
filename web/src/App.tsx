@@ -146,6 +146,195 @@ function formatDate(value: number | string): string {
   }).format(date)
 }
 
+const CONTRIBUTION_WEEKS = 53
+const CONTRIBUTION_DAY_FORMAT = new Intl.DateTimeFormat('zh-CN', {
+  year: 'numeric',
+  month: 'long',
+  day: 'numeric',
+  weekday: 'short',
+})
+
+interface ContributionDay {
+  day: string
+  requests: number
+  success: number
+  totalTokens: number
+}
+
+/** 返回本地时区日期字符串，避免 UTC 转换导致热力图日期偏移。 */
+function localDayKey(date: Date): string {
+  const month = String(date.getMonth() + 1).padStart(2, '0')
+  const day = String(date.getDate()).padStart(2, '0')
+  return `${date.getFullYear()}-${month}-${day}`
+}
+
+/** 把日期归零到本地当天零点。 */
+function localMidnight(value: Date): Date {
+  const date = new Date(value)
+  date.setHours(0, 0, 0, 0)
+  return date
+}
+
+/** 把日期调整到所在周的周一。 */
+function localWeekStart(value: Date): Date {
+  const date = localMidnight(value)
+  const offset = (date.getDay() + 6) % 7
+  date.setDate(date.getDate() - offset)
+  return date
+}
+
+/** 在本地日期上增减天数，自动处理跨月与夏令时。 */
+function addLocalDays(value: Date, days: number): Date {
+  const date = new Date(value)
+  date.setDate(date.getDate() + days)
+  return date
+}
+
+/** 返回有序数组的分位数，用于把请求量映射为相对热力等级。 */
+function quantile(sorted: number[], ratio: number): number {
+  if (sorted.length === 0) return 0
+  return sorted[Math.floor((sorted.length - 1) * ratio)] ?? 0
+}
+
+/**
+ * 最近一年请求活跃度热力图。
+ *
+ * 布局对齐 GitHub 贡献墙：每列一周、每行一天，最近 53 周按请求次数分成
+ * 五档深浅。未来日期留空，热力等级使用活跃日的分位数计算，避免单日尖峰
+ * 让其余日期都退化为同一颜色。
+ */
+function ContributionWall({ days }: { days: ContributionDay[] }) {
+  const calendar = useMemo(() => {
+    const today = localMidnight(new Date())
+    const firstDay = addLocalDays(localWeekStart(today), -(CONTRIBUTION_WEEKS - 1) * 7)
+    const byDay = new Map(days.map(item => [item.day, item]))
+    const baseCells = Array.from({ length: CONTRIBUTION_WEEKS * 7 }, (_, index) => {
+      const date = addLocalDays(firstDay, index)
+      const day = localDayKey(date)
+      const value = byDay.get(day)
+      return {
+        day,
+        date,
+        future: date.getTime() > today.getTime(),
+        requests: value?.requests ?? 0,
+        success: value?.success ?? 0,
+        totalTokens: value?.totalTokens ?? 0,
+      }
+    })
+    const activeRequests = baseCells
+      .filter(cell => !cell.future && cell.requests > 0)
+      .map(cell => cell.requests)
+      .sort((left, right) => left - right)
+    const maxRequests = activeRequests[activeRequests.length - 1] ?? 0
+    const thresholds = [
+      quantile(activeRequests, 0.25),
+      quantile(activeRequests, 0.5),
+      quantile(activeRequests, 0.75),
+    ]
+    const levelFor = (requests: number): number => {
+      if (requests <= 0) return 0
+      if (activeRequests.length <= 4) {
+        if (requests <= maxRequests * 0.25) return 1
+        if (requests <= maxRequests * 0.5) return 2
+        if (requests <= maxRequests * 0.75) return 3
+        return 4
+      }
+      if (requests <= thresholds[0]) return 1
+      if (requests <= thresholds[1]) return 2
+      if (requests <= thresholds[2]) return 3
+      return 4
+    }
+    const cells = baseCells.map(cell => ({
+      ...cell,
+      level: cell.future ? 0 : levelFor(cell.requests),
+    }))
+    const monthChanges: number[] = []
+    for (let index = 0; index < CONTRIBUTION_WEEKS; index += 1) {
+      const date = addLocalDays(firstDay, index * 7)
+      const previous = index === 0 ? undefined : addLocalDays(firstDay, (index - 1) * 7)
+      if (index === 0 || date.getMonth() !== previous?.getMonth()) monthChanges.push(index)
+    }
+    const monthLabels = Array.from({ length: CONTRIBUTION_WEEKS }, () => '')
+    monthChanges.forEach((index, position) => {
+      const next = monthChanges[position + 1]
+      if (position === 0 && next !== undefined && next - index < 3) return
+      monthLabels[index] = `${addLocalDays(firstDay, index * 7).getMonth() + 1}月`
+    })
+    return {
+      cells,
+      monthLabels,
+      totalRequests: cells.reduce((sum, cell) => sum + (cell.future ? 0 : cell.requests), 0),
+      totalTokens: cells.reduce((sum, cell) => sum + (cell.future ? 0 : cell.totalTokens), 0),
+      activeDays: activeRequests.length,
+    }
+  }, [days])
+
+  return (
+    <div className="panel contribution-panel">
+      <div className="panel-head">
+        <h2>请求活跃度</h2>
+      </div>
+      <div className="contribution-scroll">
+        <div
+          className="contribution-calendar"
+          aria-label={`最近一年每日请求活跃度，共 ${formatNumber(calendar.totalRequests)} 次请求`}
+        >
+          <div className="contribution-months" aria-hidden="true">
+            {calendar.monthLabels.map((label, index) => (
+              <span key={`${index}-${label}`}>{label}</span>
+            ))}
+          </div>
+          <div className="contribution-weekdays" aria-hidden="true">
+            {['一', '', '三', '', '五', '', '日'].map((label, index) => (
+              <span key={`${index}-${label}`}>{label}</span>
+            ))}
+          </div>
+          <div className="contribution-grid">
+            {calendar.cells.map((cell, index) => {
+              const column = Math.floor(index / 7)
+              const row = index % 7
+              return (
+                <span
+                  key={cell.day}
+                  className={[
+                    'contribution-cell',
+                    `level-${cell.level}`,
+                    cell.requests <= 0 ? 'no-data' : '',
+                    cell.future ? 'future' : '',
+                    row < 2 ? 'tooltip-below' : '',
+                    column < 4 ? 'tooltip-align-left' : '',
+                    column > CONTRIBUTION_WEEKS - 5 ? 'tooltip-align-right' : '',
+                  ].filter(Boolean).join(' ')}
+                  aria-label={cell.future
+                    ? undefined
+                    : `${cell.day}：请求数 ${formatNumber(cell.requests)}，Token ${formatToken(cell.totalTokens)}`}
+                >
+                  {!cell.future && (
+                    <span className="contribution-tooltip" role="tooltip">
+                      <span className="contribution-tooltip-title">
+                        {CONTRIBUTION_DAY_FORMAT.format(cell.date)}
+                      </span>
+                      <span className="contribution-tooltip-row"><span>请求数</span><strong>{formatNumber(cell.requests)}</strong></span>
+                      <span className="contribution-tooltip-row"><span>Token</span><strong>{formatToken(cell.totalTokens)}</strong></span>
+                    </span>
+                  )}
+                </span>
+              )
+            })}
+          </div>
+        </div>
+      </div>
+      <div className="contribution-foot">
+        <div className="contribution-summary">
+          <span><strong>{formatNumber(calendar.totalRequests)}</strong> 次请求</span>
+          <span><strong>{formatToken(calendar.totalTokens)}</strong> Token</span>
+          <span><strong>{calendar.activeDays}</strong> 个活跃日</span>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 interface UsageBarItem {
   id: string
   label: string
@@ -1858,36 +2047,41 @@ function TodayUsageCard() {
     ? '-'
     : `${((todaySummary.success / todaySummary.requests) * 100).toFixed(1)}%`
   return (
-    <section className="usage-today">
-      <div className="panel-head">
-        <h2>今日用量</h2>
-        <span className="panel-note">固定显示当天数据</span>
-      </div>
-      {today.loading && <Spinner label="加载中" />}
-      {today.error !== undefined && <div className="alert error">{today.error}</div>}
-      {!today.loading && today.data !== undefined && (
-        <div className="stat-grid">
-          <div className="stat-card">
-            <span className="stat-label">请求</span>
-            <span className="stat-value">{todaySummary === undefined ? '-' : formatNumber(todaySummary.requests)}</span>
-          </div>
-          <div className="stat-card">
-            <span className="stat-label">成功率</span>
-            <span className="stat-value">{todaySuccessRate}</span>
-          </div>
-          <div className="stat-card">
-            <span className="stat-label">Token</span>
-            <span className="stat-value">{todaySummary === undefined ? '-' : formatToken(todaySummary.totalTokens)}</span>
-          </div>
-          <div className="stat-card">
-            <span className="stat-label">平均耗时</span>
-            <span className="stat-value">
-              {todaySummary === undefined || todaySummary.requests === 0 ? '-' : formatMs(todaySummary.durationMs / todaySummary.requests)}
-            </span>
-          </div>
+    <>
+      <section className="usage-today">
+        <div className="panel-head">
+          <h2>今日用量</h2>
+          <span className="panel-note">固定显示当天数据</span>
         </div>
+        {today.loading && <Spinner label="加载中" />}
+        {today.error !== undefined && <div className="alert error">{today.error}</div>}
+        {!today.loading && today.data !== undefined && (
+          <div className="stat-grid">
+            <div className="stat-card">
+              <span className="stat-label">请求</span>
+              <span className="stat-value">{todaySummary === undefined ? '-' : formatNumber(todaySummary.requests)}</span>
+            </div>
+            <div className="stat-card">
+              <span className="stat-label">成功率</span>
+              <span className="stat-value">{todaySuccessRate}</span>
+            </div>
+            <div className="stat-card">
+              <span className="stat-label">Token</span>
+              <span className="stat-value">{todaySummary === undefined ? '-' : formatToken(todaySummary.totalTokens)}</span>
+            </div>
+            <div className="stat-card">
+              <span className="stat-label">平均耗时</span>
+              <span className="stat-value">
+                {todaySummary === undefined || todaySummary.requests === 0 ? '-' : formatMs(todaySummary.durationMs / todaySummary.requests)}
+              </span>
+            </div>
+          </div>
+        )}
+      </section>
+      {!today.loading && today.data !== undefined && (
+        <ContributionWall days={today.data.activityByDay ?? []} />
       )}
-    </section>
+    </>
   )
 }
 

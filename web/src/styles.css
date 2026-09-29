@@ -614,6 +614,216 @@ select:focus {
   padding: 16px 20px 20px;
 }
 
+.contribution-scroll {
+  max-width: 1120px;
+  margin: 0 auto;
+  padding: 2px 20px 0 0;
+  overflow: visible;
+}
+
+.contribution-panel {
+  overflow: visible;
+}
+
+.contribution-calendar {
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr);
+  grid-template-rows: 14px max-content;
+  gap: 6px;
+  width: 100%;
+}
+
+.contribution-months {
+  display: grid;
+  grid-column: 2;
+  grid-row: 1;
+  grid-template-columns: repeat(53, minmax(0, 1fr));
+  gap: 4px;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.contribution-months span {
+  overflow: visible;
+  color: var(--text-tertiary);
+  font-size: 10px;
+  line-height: 14px;
+  white-space: nowrap;
+}
+
+.contribution-weekdays {
+  display: grid;
+  grid-column: 1;
+  grid-row: 2;
+  grid-template-rows: repeat(7, minmax(0, 1fr));
+  row-gap: 4px;
+  height: 100%;
+}
+
+.contribution-weekdays span {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  color: var(--text-tertiary);
+  font-size: 9px;
+  line-height: 10px;
+}
+
+.contribution-grid {
+  display: grid;
+  grid-column: 2;
+  grid-row: 2;
+  grid-auto-flow: column;
+  grid-template-columns: repeat(53, minmax(0, 1fr));
+  grid-template-rows: repeat(7, minmax(0, 1fr));
+  gap: 4px;
+  aspect-ratio: 53 / 7;
+  min-width: 0;
+}
+
+.contribution-cell {
+  position: relative;
+  min-width: 0;
+  min-height: 0;
+  border-radius: 2px;
+  background: #f2f3f5;
+  outline: 1px solid rgba(27, 31, 35, 0.06);
+  outline-offset: -1px;
+}
+
+.contribution-cell.no-data {
+  background: #f2f3f5;
+}
+
+.contribution-cell.level-1 {
+  background: #9be9a8;
+}
+
+.contribution-cell.level-2 {
+  background: #40c463;
+}
+
+.contribution-cell.level-3 {
+  background: #30a14e;
+}
+
+.contribution-cell.level-4 {
+  background: #216e39;
+}
+
+.contribution-cell.future {
+  background: transparent;
+  outline: none;
+}
+
+.contribution-grid .contribution-cell:not(.future):hover {
+  z-index: 10;
+}
+
+.contribution-tooltip {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 50%;
+  z-index: 20;
+  display: grid;
+  gap: 5px;
+  width: max-content;
+  min-width: 176px;
+  padding: 9px 11px;
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  background: var(--bg);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
+  opacity: 0;
+  visibility: hidden;
+  transform: translate(-50%, 4px);
+  transition: opacity 0.12s ease, transform 0.12s ease, visibility 0.12s;
+  pointer-events: none;
+}
+
+.contribution-cell:hover .contribution-tooltip {
+  opacity: 1;
+  visibility: visible;
+  transform: translate(-50%, 0);
+}
+
+.contribution-cell.tooltip-below .contribution-tooltip {
+  top: calc(100% + 8px);
+  bottom: auto;
+  transform: translate(-50%, -4px);
+}
+
+.contribution-cell.tooltip-below:hover .contribution-tooltip {
+  transform: translate(-50%, 0);
+}
+
+.contribution-cell.tooltip-align-left .contribution-tooltip {
+  left: 0;
+  transform: translate(0, 4px);
+}
+
+.contribution-cell.tooltip-align-right .contribution-tooltip {
+  right: 0;
+  left: auto;
+  transform: translate(0, 4px);
+}
+
+.contribution-cell.tooltip-align-left:hover .contribution-tooltip,
+.contribution-cell.tooltip-align-right:hover .contribution-tooltip {
+  transform: translate(0, 0);
+}
+
+.contribution-cell.tooltip-below.tooltip-align-left .contribution-tooltip,
+.contribution-cell.tooltip-below.tooltip-align-right .contribution-tooltip {
+  transform: translate(0, -4px);
+}
+
+.contribution-cell.tooltip-below.tooltip-align-left:hover .contribution-tooltip,
+.contribution-cell.tooltip-below.tooltip-align-right:hover .contribution-tooltip {
+  transform: translate(0, 0);
+}
+
+.contribution-tooltip-title {
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.contribution-tooltip-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 20px;
+  color: var(--text-secondary);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.contribution-tooltip-row strong {
+  color: var(--text);
+  font-weight: 500;
+}
+
+.contribution-foot {
+  display: flex;
+  align-items: center;
+  gap: 12px 20px;
+  padding: 14px 20px 18px;
+}
+
+.contribution-summary {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  color: var(--text-tertiary);
+  font-size: 12px;
+}
+
+.contribution-summary strong {
+  color: var(--text-secondary);
+  font-weight: 500;
+}
+
 .panel-head {
   display: flex;
   align-items: center;
@@ -1534,6 +1744,11 @@ tbody tr:hover {
 
   .channel-grid {
     grid-template-columns: 1fr;
+  }
+
+  .contribution-foot {
+    align-items: flex-start;
+    flex-direction: column;
   }
 
   .settings-meta-item {
