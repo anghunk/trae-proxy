@@ -1,7 +1,7 @@
 /**
  * Trae Proxy 管理台。
  *
- * 视图：登录/初始化、概览、Providers、API Keys、用量。
+ * 视图：登录/初始化、概览、Providers、API Keys、用量统计、使用日志。
  * 设计参考 Vercel 的克制单色风格（Geist 字体、表格化布局），但不复制其品牌。
  */
 
@@ -9,15 +9,17 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import type { FormEvent } from 'react'
 import { api, type ApiKey, type Dashboard, type Provider } from './api.ts'
+import { DateRangePicker, type DateRange } from './components/DateRangePicker.tsx'
 import { useTheme, type Theme } from './theme.ts'
 
-type View = 'overview' | 'providers' | 'keys' | 'usage' | 'provider-detail' | 'settings-password' | 'settings-gateway'
+type View = 'overview' | 'providers' | 'keys' | 'usage' | 'logs' | 'provider-detail' | 'settings-password' | 'settings-gateway'
 
 const VIEWS: Array<{ id: View; label: string }> = [
   { id: 'overview', label: '控制台' },
   { id: 'providers', label: '渠道模型' },
   { id: 'keys', label: 'API Keys' },
   { id: 'usage', label: '用量统计' },
+  { id: 'logs', label: '使用日志' },
   { id: 'settings-password', label: '系统设置' },
 ]
 
@@ -30,7 +32,7 @@ function viewFromPath(): View {
   if (/^\/providers\/[^/]+\/?$/.test(window.location.pathname)) return 'provider-detail'
   const settingsMatch = /^\/settings\/(password|gateway)\/?$/.exec(window.location.pathname)
   if (settingsMatch !== null) return `settings-${settingsMatch[1]}` as View
-  const match = /^\/(overview|providers|keys|usage)\/?$/.exec(window.location.pathname)
+  const match = /^\/(overview|providers|keys|usage|logs)\/?$/.exec(window.location.pathname)
   return match === null ? 'overview' : match[1] as View
 }
 
@@ -76,20 +78,19 @@ interface OfficialPreset {
   type: Provider['type']
   baseUrl: string
   needsKey: boolean
-  models: string[]
   hint: string
 }
 
 const OFFICIAL_PRESETS: OfficialPreset[] = [
-  { id: 'deepseek', name: 'DeepSeek 官方', type: 'openai', baseUrl: 'https://api.deepseek.com', needsKey: true, models: ['deepseek-chat', 'deepseek-reasoner'], hint: 'deepseek-chat / deepseek-reasoner' },
-  { id: 'zhipu', name: '智谱 GLM', type: 'openai', baseUrl: 'https://open.bigmodel.cn/api/paas/v4', needsKey: true, models: ['glm-4-plus', 'glm-4-flash'], hint: 'glm-4 系列' },
-  { id: 'kimi', name: '月之暗面 Kimi', type: 'openai', baseUrl: 'https://api.moonshot.cn/v1', needsKey: true, models: ['kimi-k2-0711-preview', 'moonshot-v1-8k'], hint: 'kimi 系列' },
-  { id: 'qwen', name: '阿里通义千问', type: 'openai', baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1', needsKey: true, models: ['qwen-max', 'qwen-plus', 'qwen-turbo'], hint: 'qwen 系列' },
-  { id: 'siliconflow', name: '硅基流动 SiliconFlow', type: 'openai', baseUrl: 'https://api.siliconflow.cn/v1', needsKey: true, models: ['Qwen/Qwen2.5-72B-Instruct'], hint: '开源模型托管' },
-  { id: 'openrouter', name: 'OpenRouter', type: 'openai', baseUrl: 'https://openrouter.ai/api/v1', needsKey: true, models: ['anthropic/claude-3.5-sonnet'], hint: '聚合多厂商模型' },
-  { id: 'anthropic', name: 'Anthropic 官方', type: 'anthropic', baseUrl: 'https://api.anthropic.com', needsKey: true, models: ['claude-3-5-sonnet-latest'], hint: 'Claude 系列' },
-  { id: 'gemini', name: 'Google Gemini', type: 'gemini', baseUrl: 'https://generativelanguage.googleapis.com', needsKey: true, models: ['gemini-2.0-flash'], hint: 'Gemini 系列' },
-  { id: 'ollama', name: '本地 Ollama', type: 'ollama', baseUrl: 'http://127.0.0.1:11434/v1', needsKey: false, models: ['llama3.1'], hint: '自动调用本机 CLI' },
+  { id: 'deepseek', name: 'DeepSeek 官方', type: 'openai', baseUrl: 'https://api.deepseek.com', needsKey: true, hint: 'deepseek-chat / deepseek-reasoner' },
+  { id: 'zhipu', name: '智谱 GLM', type: 'openai', baseUrl: 'https://open.bigmodel.cn/api/paas/v4', needsKey: true, hint: 'glm-4 系列' },
+  { id: 'kimi', name: '月之暗面 Kimi', type: 'openai', baseUrl: 'https://api.moonshot.cn/v1', needsKey: true, hint: 'kimi 系列' },
+  { id: 'qwen', name: '阿里通义千问', type: 'openai', baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1', needsKey: true, hint: 'qwen 系列' },
+  { id: 'siliconflow', name: '硅基流动 SiliconFlow', type: 'openai', baseUrl: 'https://api.siliconflow.cn/v1', needsKey: true, hint: '开源模型托管' },
+  { id: 'openrouter', name: 'OpenRouter', type: 'openai', baseUrl: 'https://openrouter.ai/api/v1', needsKey: true, hint: '聚合多厂商模型' },
+  { id: 'anthropic', name: 'Anthropic 官方', type: 'anthropic', baseUrl: 'https://api.anthropic.com', needsKey: true, hint: 'Claude 系列' },
+  { id: 'gemini', name: 'Google Gemini', type: 'gemini', baseUrl: 'https://generativelanguage.googleapis.com', needsKey: true, hint: 'Gemini 系列' },
+  { id: 'ollama', name: '本地 Ollama', type: 'ollama', baseUrl: 'http://127.0.0.1:11434/v1', needsKey: false, hint: '自动调用本机 CLI' },
 ]
 
 function formatNumber(value: number): string {
@@ -145,6 +146,25 @@ function formatDate(value: number | string): string {
     hour: '2-digit',
     minute: '2-digit',
   }).format(date)
+}
+
+/** 将日期输入值转换为本地时区时间戳；结束边界使用次日零点作为开区间上界。 */
+function localDateBoundary(value: string, endExclusive = false): number | undefined {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value)
+  if (match === null) return undefined
+  const year = Number(match[1])
+  const month = Number(match[2])
+  const day = Number(match[3])
+  const date = new Date(year, month - 1, day)
+  if (
+    date.getFullYear() !== year
+    || date.getMonth() !== month - 1
+    || date.getDate() !== day
+  ) {
+    return undefined
+  }
+  if (endExclusive) date.setDate(date.getDate() + 1)
+  return date.getTime()
 }
 
 const CONTRIBUTION_WEEKS = 53
@@ -1022,6 +1042,8 @@ function ChannelForm({
   const models = discovered.length > 0
     ? discovered
     : catalog !== undefined ? catalog : template.models
+  const selectedUnavailable = [...new Set(selected.filter(model => !models.includes(model)))]
+  const modelOptions = [...models, ...selectedUnavailable]
 
   const isEdit = initial !== undefined
 
@@ -1056,7 +1078,7 @@ function ChannelForm({
     setType(preset.type)
     setBaseUrl(preset.baseUrl)
     setApiKey('')
-    setSelected(preset.models)
+    setSelected([])
     setDiscovered([])
     setSuccess(undefined)
     setError(undefined)
@@ -1137,7 +1159,7 @@ function ChannelForm({
           <div className="preset-section">
             <div className="preset-head">
               <span>官方渠道</span>
-              <span className="preset-hint">点击后自动填充地址与常用模型</span>
+              <span className="preset-hint">点击后自动填充渠道信息</span>
             </div>
             <div className="preset-grid">
               {OFFICIAL_PRESETS.map(preset => (
@@ -1221,23 +1243,44 @@ function ChannelForm({
             <div className="models-head">
               <span>模型映射</span>
               <span className="models-count">
-                {models.length === 0 ? '点击获取全部模型' : selected.length === 0 ? '全部' : `映射 ${selected.length} / ${models.length}`}
+                {modelOptions.length === 0
+                  ? '点击获取全部模型'
+                  : selected.length === 0
+                    ? '全部'
+                    : selectedUnavailable.length > 0
+                      ? `映射 ${selected.length} 个（含 ${selectedUnavailable.length} 个不在目录）`
+                      : `映射 ${selected.length} / ${models.length}`}
               </span>
             </div>
-            {models.length === 0 ? (
+            {modelOptions.length === 0 ? (
               <div className="empty">点击「获取全部模型」查看并选择要映射的模型</div>
             ) : (
               <>
-                <div className="models-tools">
-                  <button type="button" className="link-button" onClick={() => setSelected(models)}>全选</button>
-                  <button type="button" className="link-button" onClick={() => setSelected([])}>清空</button>
-                </div>
+                {models.length > 0 && (
+                  <div className="models-tools">
+                    <button type="button" className="link-button" onClick={() => setSelected(models)}>全选</button>
+                    <button type="button" className="link-button" onClick={() => setSelected([])}>清空</button>
+                  </div>
+                )}
                 <div className="models-tip">留空表示映射该渠道全部模型，勾选后仅暴露所选模型</div>
+                {selectedUnavailable.length > 0 && (
+                  <div className="models-tip unavailable">
+                    有 {selectedUnavailable.length} 个已选模型不在当前目录，取消勾选并保存即可移除。
+                  </div>
+                )}
                 <div className="model-list">
-                  {models.map(model => {
+                  {modelOptions.map(model => {
                     const checked = selected.includes(model)
+                    const unavailable = selectedUnavailable.includes(model)
                     return (
-                      <label key={model} className={`model-item${checked ? ' selected' : ''}`}>
+                      <label
+                        key={model}
+                        className={[
+                          'model-item',
+                          checked ? 'selected' : '',
+                          unavailable ? 'unavailable' : '',
+                        ].filter(Boolean).join(' ')}
+                      >
                         <input
                           type="checkbox"
                           checked={checked}
@@ -1247,7 +1290,8 @@ function ChannelForm({
                               : current.filter(item => item !== model))
                           }}
                         />
-                        <span className="mono">{model}</span>
+                        <span className="mono model-name">{model}</span>
+                        {unavailable && <span className="model-unavailable">不在当前目录</span>}
                       </label>
                     )
                   })}
@@ -1822,10 +1866,22 @@ function KeysView() {
   )
 }
 
+/** 加载 API key 列表，并把用量事件中的 key id 映射为可读名称。 */
+function useApiKeyLabel(): (id: string | null | undefined) => string {
+  const { data: keysData } = useAsync(() => api.apiKeys(), [])
+  const keyMap = useMemo(
+    () => new Map((keysData?.data ?? []).map(key => [key.id, key])),
+    [keysData],
+  )
+  return (id: string | null | undefined): string => {
+    if (id === null || id === undefined || id === '') return '-'
+    const key = keyMap.get(id)
+    return key === undefined ? `已删除密钥 (${id.slice(0, 8)})` : key.name
+  }
+}
+
 function UsageView() {
   const [range, setRange] = useState<'today' | '7d' | '30d' | 'all'>('7d')
-  const [page, setPage] = useState(1)
-  const PAGE_SIZE = 10
   const rangeParams = useMemo(() => {
     const now = Date.now()
     const day = 24 * 60 * 60 * 1000
@@ -1838,25 +1894,9 @@ function UsageView() {
     if (range === '30d') return { from: now - 30 * day }
     return {}
   }, [range])
-  const { data, error, loading, reload } = useAsync(
-    () => api.usage(rangeParams, { limit: PAGE_SIZE, offset: (page - 1) * PAGE_SIZE }),
-    [rangeParams, page],
-  )
-  const { data: keysData } = useAsync(() => api.apiKeys(), [])
-  const keyMap = useMemo(
-    () => new Map((keysData?.data ?? []).map(key => [key.id, key])),
-    [keysData],
-  )
-  /** 把用量事件里的密钥 id 映射为可读名称；密钥已删除时展示短 id 便于排查。 */
-  const keyLabel = (id: string | null | undefined): string => {
-    if (id === null || id === undefined || id === '') return '-'
-    const key = keyMap.get(id)
-    return key === undefined ? `已删除密钥 (${id.slice(0, 8)})` : key.name
-  }
+  const { data, error, loading } = useAsync(() => api.usage(rangeParams), [rangeParams])
+  const keyLabel = useApiKeyLabel()
   const summary = useMemo(() => data?.summary, [data])
-  const recent = data?.recent
-  const totalPages = recent === undefined || recent.total === 0 ? 0 : Math.max(1, Math.ceil(recent.total / PAGE_SIZE))
-  const currentPage = Math.min(page, Math.max(1, totalPages))
   const successRate = summary === undefined || summary.requests === 0
     ? '-'
     : `${((summary.success / summary.requests) * 100).toFixed(1)}%`
@@ -2012,11 +2052,139 @@ function UsageView() {
               </div>
             )}
           </div>
-          <div className="panel">
-            <div className="panel-head">
-              <h2>最近请求</h2>
-              <button className="secondary" onClick={reload}>刷新</button>
-            </div>
+        </>
+      )}
+    </section>
+  )
+}
+
+/** 独立展示最近用量事件，支持日期、密钥、模型、状态筛选与分页。 */
+function UsageLogsView() {
+  const [page, setPage] = useState(1)
+  const [dateRange, setDateRange] = useState<DateRange>({ from: '', to: '' })
+  const [apiKeyId, setApiKeyId] = useState('')
+  const [model, setModel] = useState('')
+  const [status, setStatus] = useState<'' | 'success' | 'error'>('')
+  const { from: fromDate, to: toDate } = dateRange
+  const pageSize = 20
+  const keyOptions = useAsync(() => api.usageLogOptions(), [])
+  const filterParams = useMemo(() => {
+    const from = localDateBoundary(fromDate)
+    const to = localDateBoundary(toDate, true)
+    return {
+      ...(from === undefined ? {} : { from }),
+      ...(to === undefined ? {} : { to }),
+      ...(apiKeyId === '' ? {} : { apiKeyId }),
+      ...(model === '' ? {} : { model }),
+      ...(status === '' ? {} : { status }),
+    }
+  }, [fromDate, toDate, apiKeyId, model, status])
+  const { data, error, loading, reload } = useAsync(
+    () => api.usageLogs({ ...filterParams, limit: pageSize, offset: (page - 1) * pageSize }),
+    [page, filterParams],
+  )
+  const keyMap = useMemo(
+    () => new Map((keyOptions.data?.apiKeys ?? []).map(key => [key.id, key.name])),
+    [keyOptions.data],
+  )
+  const keyLabel = (id: string | null | undefined): string => {
+    if (id === null || id === undefined || id === '') return '-'
+    return keyMap.get(id) ?? `已删除密钥 (${id.slice(0, 8)})`
+  }
+  const total = data?.total ?? 0
+  const totalPages = total === 0 ? 0 : Math.max(1, Math.ceil(total / pageSize))
+  const currentPage = Math.min(page, Math.max(1, totalPages))
+  const hasFilters = fromDate !== '' || toDate !== '' || apiKeyId !== '' || model !== '' || status !== ''
+  const resetFilters = (): void => {
+    setDateRange({ from: '', to: '' })
+    setApiKeyId('')
+    setModel('')
+    setStatus('')
+    setPage(1)
+  }
+
+  return (
+    <section className="panel">
+      <div className="panel-head">
+        <h2>使用日志</h2>
+        <button
+          className="secondary"
+          onClick={() => {
+            reload()
+            keyOptions.reload()
+          }}
+        >
+          刷新
+        </button>
+      </div>
+      <div className="log-filters">
+        <div className="log-filter-field log-filter-date">
+          <span className="log-filter-label">日期</span>
+          <DateRangePicker
+            value={dateRange}
+            onChange={next => {
+              setDateRange(next)
+              setPage(1)
+            }}
+          />
+        </div>
+        <label className="log-filter-field">
+          <span className="log-filter-label">密钥</span>
+          <select
+            value={apiKeyId}
+            onChange={event => {
+              setApiKeyId(event.target.value)
+              setPage(1)
+            }}
+          >
+            <option value="">全部密钥</option>
+            {(keyOptions.data?.apiKeys ?? []).map(key => (
+              <option key={key.id} value={key.id}>
+                {key.name ?? `已删除密钥 (${key.id.slice(0, 8)})`}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="log-filter-field">
+          <span className="log-filter-label">模型</span>
+          <select
+            value={model}
+            onChange={event => {
+              setModel(event.target.value)
+              setPage(1)
+            }}
+          >
+            <option value="">全部模型</option>
+            {(keyOptions.data?.models ?? []).map(item => (
+              <option key={item} value={item}>{item}</option>
+            ))}
+          </select>
+        </label>
+        <label className="log-filter-field">
+          <span className="log-filter-label">状态</span>
+          <select
+            value={status}
+            onChange={event => {
+              setStatus(event.target.value as '' | 'success' | 'error')
+              setPage(1)
+            }}
+          >
+            <option value="">全部状态</option>
+            <option value="success">成功</option>
+            <option value="error">失败</option>
+          </select>
+        </label>
+        <div className="log-filter-actions">
+          <button className="secondary" disabled={!hasFilters} onClick={resetFilters}>重置</button>
+        </div>
+      </div>
+      {loading && <Spinner label="加载中" />}
+      {error !== undefined && <div className="alert error">{error}</div>}
+      {!loading && data !== undefined && (
+        <>
+          {data.rows.length === 0 ? (
+            <div className="empty">{hasFilters ? '没有符合条件的记录' : '暂无记录'}</div>
+          ) : (
             <div className="table-wrap">
               <table>
                 <thead>
@@ -2031,7 +2199,7 @@ function UsageView() {
                   </tr>
                 </thead>
                 <tbody>
-                  {(recent?.rows ?? []).map(row => (
+                  {data.rows.map(row => (
                     <tr key={row.id}>
                       <td>{formatDate(row.ts)}</td>
                       <td title={row.apiKeyId}>{keyLabel(row.apiKeyId)}</td>
@@ -2049,27 +2217,27 @@ function UsageView() {
                 </tbody>
               </table>
             </div>
-            <div className="pagination">
-              <button
-                className="secondary"
-                disabled={page <= 1}
-                onClick={() => setPage(value => value - 1)}
-              >
-                上一页
-              </button>
-              <span className="pagination-info">
-                {recent !== undefined && recent.total > 0
-                  ? `第 ${currentPage} / ${totalPages} 页 · 共 ${formatNumber(recent.total)} 条`
-                  : '暂无记录'}
-              </span>
-              <button
-                className="secondary"
-                disabled={page >= totalPages}
-                onClick={() => setPage(value => value + 1)}
-              >
-                下一页
-              </button>
-            </div>
+          )}
+          <div className="pagination">
+            <button
+              className="secondary"
+              disabled={page <= 1}
+              onClick={() => setPage(value => value - 1)}
+            >
+              上一页
+            </button>
+            <span className="pagination-info">
+              {total > 0
+                ? `第 ${currentPage} / ${totalPages} 页 · 共 ${formatNumber(total)} 条`
+                : '暂无记录'}
+            </span>
+            <button
+              className="secondary"
+              disabled={page >= totalPages}
+              onClick={() => setPage(value => value + 1)}
+            >
+              下一页
+            </button>
           </div>
         </>
       )}
@@ -2355,6 +2523,7 @@ function Shell({ theme, onToggleTheme }: {
     : view === 'providers' ? '渠道'
     : view === 'keys' ? 'API Keys'
     : view === 'usage' ? '用量'
+    : view === 'logs' ? '使用日志'
     : view === 'settings-password' ? '设置'
     : view === 'settings-gateway' ? '设置'
     : '渠道详情'
@@ -2405,6 +2574,7 @@ function Shell({ theme, onToggleTheme }: {
         )}
         {view === 'keys' && <KeysView />}
         {view === 'usage' && <UsageView />}
+        {view === 'logs' && <UsageLogsView />}
         {view === 'settings-password' && <PasswordSettingsView />}
         {view === 'settings-gateway' && <GatewaySettingsView />}
       </main>

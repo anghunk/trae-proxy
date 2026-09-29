@@ -70,6 +70,24 @@ export interface UsageResponse {
   byModel: Array<{ key: string | null; requests: number; success: number; requestTokens: number; responseTokens: number; totalTokens: number }>
 }
 
+export interface UsageLogsResponse {
+  rows: UsageRow[]
+  total: number
+}
+
+export interface UsageLogOptions {
+  apiKeys: Array<{ id: string; name?: string }>
+  models: string[]
+}
+
+export interface UsageLogFilters {
+  from?: number
+  to?: number
+  apiKeyId?: string
+  model?: string
+  status?: 'success' | 'error'
+}
+
 export interface GatewaySettings {
   username: string
   port: number
@@ -173,4 +191,17 @@ export const api = {
     const query = params.toString()
     return request<UsageResponse>(`/api/usage${query === '' ? '' : `?${query}`}`)
   },
+  usageLogs: (options: UsageLogFilters & { limit?: number; offset?: number } = {}) => {
+    const params = new URLSearchParams()
+    if (options.from !== undefined) params.set('from', String(options.from))
+    if (options.to !== undefined) params.set('to', String(options.to))
+    if (options.apiKeyId !== undefined) params.set('apiKeyId', options.apiKeyId)
+    if (options.model !== undefined) params.set('model', options.model)
+    if (options.status !== undefined) params.set('status', options.status)
+    if (options.limit !== undefined) params.set('limit', String(options.limit))
+    if (options.offset !== undefined) params.set('offset', String(options.offset))
+    const query = params.toString()
+    return request<UsageLogsResponse>(`/api/usage/logs${query === '' ? '' : `?${query}`}`)
+  },
+  usageLogOptions: () => request<UsageLogOptions>('/api/usage/logs/options'),
 }

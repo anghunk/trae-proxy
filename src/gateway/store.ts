@@ -667,18 +667,51 @@ export class GatewayStore {
     }
   }
 
-  /** 最近用量事件（管理台最近请求表，分页；options.total 传 true 时同时返回总条数）。 */
-  recentUsage(options: { limit?: number; offset?: number; total?: boolean } = {}): { rows: UsageEventRecord[]; total: number } {
+  /** 最近用量事件（管理台使用日志，支持分页与日期、密钥、模型、状态筛选）。 */
+  recentUsage(options: {
+    limit?: number
+    offset?: number
+    total?: boolean
+    from?: number
+    to?: number
+    apiKeyId?: string
+    model?: string
+    status?: 'success' | 'error'
+  } = {}): { rows: UsageEventRecord[]; total: number } {
     this.flushUsage()
     const limit = options.limit ?? 20
     const offset = options.offset ?? 0
+    const conditions: string[] = []
+    const params: Array<number | string> = []
+    if (options.from !== undefined) {
+      conditions.push('ts >= ?')
+      params.push(options.from)
+    }
+    if (options.to !== undefined) {
+      conditions.push('ts < ?')
+      params.push(options.to)
+    }
+    if (options.apiKeyId !== undefined) {
+      conditions.push('api_key_id = ?')
+      params.push(options.apiKeyId)
+    }
+    if (options.model !== undefined) {
+      conditions.push('model = ?')
+      params.push(options.model)
+    }
+    if (options.status === 'success') {
+      conditions.push('status >= 200 AND status < 400')
+    } else if (options.status === 'error') {
+      conditions.push('(status < 200 OR status >= 400)')
+    }
+    const where = conditions.length === 0 ? '' : `WHERE ${conditions.join(' AND ')}`
     const rows = this.db
       .prepare(
         `SELECT id, ts, api_key_id, provider_id, model, request_tokens, response_tokens,
                 total_tokens, status, duration_ms, streamed
-         FROM usage_events ORDER BY ts DESC, id DESC LIMIT ? OFFSET ?`,
+         FROM usage_events ${where} ORDER BY ts DESC, id DESC LIMIT ? OFFSET ?`,
       )
-      .all(limit, offset) as {
+      .all(...params, limit, offset) as {
       id: number
       ts: number
       api_key_id: string | null
@@ -705,8 +738,41 @@ export class GatewayStore {
       streamed: row.streamed,
     }))
     if (!options.total) return { rows: mapped, total: 0 }
-    const total = this.db.prepare('SELECT COUNT(*) AS n FROM usage_events').get() as { n: number }
+    const total = this.db
+      .prepare(`SELECT COUNT(*) AS n FROM usage_events ${where}`)
+      .get(...params) as { n: number }
     return { rows: mapped, total: Number(total.n) }
+  }
+
+  /** 返回使用日志筛选器需要的密钥与模型选项，包含已删除密钥的历史记录。 */
+  usageLogOptions(): {
+    apiKeys: Array<{ id: string; name?: string }>
+    models: string[]
+  } {
+    this.flushUsage()
+    const keyRows = this.db
+      .prepare(
+        `SELECT DISTINCT usage_events.api_key_id AS id, api_keys.name
+         FROM usage_events
+         LEFT JOIN api_keys ON api_keys.id = usage_events.api_key_id
+         WHERE usage_events.api_key_id IS NOT NULL AND usage_events.api_key_id <> ''
+         ORDER BY api_keys.name COLLATE NOCASE, usage_events.api_key_id`,
+      )
+      .all() as Array<{ id: string; name: string | null }>
+    const modelRows = this.db
+      .prepare(
+        `SELECT DISTINCT model FROM usage_events
+         WHERE model IS NOT NULL AND model <> ''
+         ORDER BY model COLLATE NOCASE`,
+      )
+      .all() as Array<{ model: string }>
+    return {
+      apiKeys: keyRows.map(row => ({
+        id: row.id,
+        ...(row.name === null ? {} : { name: row.name }),
+      })),
+      models: modelRows.map(row => row.model),
+    }
   }
 
   /** 按 provider/model/api key 汇总（管理台图表）。 */

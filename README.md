@@ -14,6 +14,7 @@
 - **保存即生效**：管理台修改后无需重启；
 - **安全**：管理员登录 + 可吊销 API key，SQLite 本地存储；
 - **用量统计**：按天 / provider / key / 模型查看请求数、Token、成功率与耗时；
+- **使用日志**：独立查看最近请求的状态、Token、耗时与流式信息；
 - **明暗主题**：管理台支持明亮 / 黑夜切换，默认跟随系统外观，选择保存在本地。
 
 > 本项目参考（改写自）[dingminhua/dsh-connect-trae](https://github.com/dingminhua/dsh-connect-trae)（MIT，Copyright (c) 2026 LaoDing）及 [weixiaokuan123/trae-proxy](https://github.com/weixiaokuan123/trae-proxy)（MIT，Copyright (c) 2026 weixiaokuan123），只读 Trae 登录态，不提供账号切换。
@@ -59,7 +60,8 @@ curl http://127.0.0.1:39310/v1/chat/completions \
 - **控制台**：渠道状态、模型数、累计请求与 Token；
 - **渠道模型**：新增/编辑/启停/删除 provider，保存后热生效，Trae 类型无需 API Key；
 - **API Keys**：创建/复制/吊销 key，可限制可访问 provider，支持一键唤起 CC Switch 官方导入；
-- **用量统计**：按今天 / 7 天 / 30 天 / 全部汇总，支持按模型统计与最近请求分页。
+- **用量统计**：按今天 / 7 天 / 30 天 / 全部汇总，支持按 key 与模型统计；
+- **使用日志**：按日期、密钥、模型、状态筛选最近请求记录，支持分页与手动刷新。
 
 侧栏左下角（登录页为视口左下角）的按钮可在明亮 / 黑夜主题间切换：未选择时跟随系统（`prefers-color-scheme`），手动选择后写入 `localStorage`（键 `trae-proxy-theme`），刷新不闪白。
 

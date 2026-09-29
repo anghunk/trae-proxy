@@ -1950,6 +1950,37 @@ export function createGatewayServer(options: GatewayServerOptions): GatewayServe
       return
     }
 
+    if (req.method === 'GET' && path === '/api/usage/logs/options') {
+      writeJson(res, 200, store.usageLogOptions())
+      return
+    }
+
+    if (req.method === 'GET' && path === '/api/usage/logs') {
+      const limitParam = Number(url.searchParams.get('limit') ?? 20)
+      const offsetParam = Number(url.searchParams.get('offset') ?? 0)
+      const limit = Number.isFinite(limitParam) ? Math.min(Math.max(Math.trunc(limitParam), 1), 200) : 20
+      const offset = Number.isFinite(offsetParam) ? Math.max(Math.trunc(offsetParam), 0) : 0
+      const fromValue = url.searchParams.get('from')
+      const toValue = url.searchParams.get('to')
+      const fromParam = fromValue === null ? undefined : Number(fromValue)
+      const toParam = toValue === null ? undefined : Number(toValue)
+      const apiKeyId = url.searchParams.get('apiKeyId') ?? undefined
+      const model = url.searchParams.get('model') ?? undefined
+      const statusValue = url.searchParams.get('status')
+      const status = statusValue === 'success' || statusValue === 'error' ? statusValue : undefined
+      writeJson(res, 200, store.recentUsage({
+        limit,
+        offset,
+        total: true,
+        ...(fromParam === undefined || !Number.isFinite(fromParam) ? {} : { from: fromParam }),
+        ...(toParam === undefined || !Number.isFinite(toParam) ? {} : { to: toParam }),
+        ...(apiKeyId === undefined || apiKeyId === '' ? {} : { apiKeyId }),
+        ...(model === undefined || model === '' ? {} : { model }),
+        ...(status === undefined ? {} : { status }),
+      }))
+      return
+    }
+
     if (req.method === 'GET' && path === '/api/usage') {
       const from = url.searchParams.get('from')
       const to = url.searchParams.get('to')
