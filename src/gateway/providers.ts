@@ -50,6 +50,13 @@ export type GatewayChatFailure = {
 export interface UpstreamProvider {
   readonly id: string
   listModels(): Promise<GatewayModel[]>
+  /**
+   * 可选：绕过本地目录缓存，强制从上游重新获取模型列表。
+   *
+   * 管理台“刷新模型”和网关定时刷新会优先调用该实现；未提供时回退到
+   * `listModels()`。
+   */
+  refreshModels?(): Promise<GatewayModel[]>
   chat(
     bodyJson: string,
     signal?: AbortSignal,
@@ -68,6 +75,11 @@ export interface ProviderRegistryOptions {
 const UPSTREAM_ERROR_MAX = 300
 const UPSTREAM_RETRY_MAX = 1
 const UPSTREAM_RETRY_DELAY_MS = 400
+
+/** 重新获取指定 provider 的完整模型目录。 */
+export function refreshProviderModels(provider: UpstreamProvider): Promise<GatewayModel[]> {
+  return provider.refreshModels === undefined ? provider.listModels() : provider.refreshModels()
+}
 
 /**
  * 从上游错误正文中提取人类可读信息，避免把 HTML / 超长响应直接透传给客户端。
@@ -171,7 +183,7 @@ export class ProviderRegistry {
     if (inflight !== undefined) return inflight
     const provider = this.providers.get(providerId)
     if (provider === undefined) return Promise.reject(new Error(`provider ${providerId} is not registered`))
-    const job = provider.listModels()
+    const job = refreshProviderModels(provider)
       .then(models => {
         if (models.length === 0) throw new Error(`provider ${providerId} returned no models`)
         this.modelCache.set(providerId, models)

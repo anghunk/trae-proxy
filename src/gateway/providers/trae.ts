@@ -102,6 +102,10 @@ export class TraeGatewayProvider implements UpstreamProvider {
     return this.catalog.current().map(toGatewayModel)
   }
 
+  async refreshModels(): Promise<GatewayModel[]> {
+    return this.refreshCatalog()
+  }
+
   async listModels(): Promise<GatewayModel[]> {
     if (this.catalog.current().length === 0) {
       try { await this.refreshCatalog() } catch { /* fallback 保持 */ }

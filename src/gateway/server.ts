@@ -27,7 +27,7 @@ import {
   verifyPassword,
 } from './auth.ts'
 import { isValidProviderId, upsertProviderInstance } from './factory.ts'
-import { ProviderRegistry, type GatewayModel } from './providers.ts'
+import { ProviderRegistry, refreshProviderModels, type GatewayModel } from './providers.ts'
 import { DEFAULT_DB_PATH, type ProviderRecord, type ProviderType } from './store.ts'
 import { SseDecoder } from '../sse.ts'
 
@@ -1809,7 +1809,8 @@ export function createGatewayServer(options: GatewayServerOptions): GatewayServe
       const record = providerRecordFromBody(body, store.getProvider(id))
       let models: import('./providers.ts').GatewayModel[]
       try {
-        models = await upsertProviderInstance(registry, record, { logger: (message, detail) => logger.warn(message, detail) }).listModels()
+        const instance = upsertProviderInstance(registry, record, { logger: (message, detail) => logger.warn(message, detail) })
+        models = await refreshProviderModels(instance)
       } catch (error: unknown) {
         writeError(res, 502, error instanceof Error ? error.message : String(error), 'connection_failed')
         return
@@ -1834,7 +1835,7 @@ export function createGatewayServer(options: GatewayServerOptions): GatewayServe
       }
       try {
         const models = provider === undefined
-          ? await upsertProviderInstance(registry, record!, { logger: (message, detail) => logger.warn(message, detail) }).listModels()
+          ? await refreshProviderModels(upsertProviderInstance(registry, record!, { logger: (message, detail) => logger.warn(message, detail) }))
           : await registry.refreshModels(id)
         writeJson(res, 200, { ok: true, count: models.length, models: models.map(model => model.id) })
       } catch (error: unknown) {

@@ -6,26 +6,81 @@
  */
 
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { createPortal } from 'react-dom'
-import type { FormEvent } from 'react'
-import { api, type ApiKey, type Dashboard, type Provider } from './api.ts'
-import { DateRangePicker, type DateRange } from './components/DateRangePicker.tsx'
+import {
+  Alert,
+  Button,
+  Card,
+  Checkbox,
+  Col,
+  ConfigProvider,
+  DatePicker,
+  Descriptions,
+  Divider,
+  Dropdown,
+  Empty,
+  Flex,
+  Form,
+  Input,
+  InputNumber,
+  Layout,
+  Menu,
+  Modal,
+  Popconfirm,
+  Progress,
+  Row,
+  Segmented,
+  Select,
+  Space,
+  Spin,
+  Statistic,
+  Switch,
+  Table,
+  Tag,
+  Tooltip,
+  Typography,
+  theme as antdTheme,
+} from 'antd'
+import type { MenuProps, TableColumnsType } from 'antd'
+import {
+  ApiOutlined,
+  BarChartOutlined,
+  CopyOutlined,
+  DashboardOutlined,
+  DeleteOutlined,
+  EditOutlined,
+  FileTextOutlined,
+  GithubOutlined,
+  KeyOutlined,
+  LinkOutlined,
+  LockOutlined,
+  LogoutOutlined,
+  MenuFoldOutlined,
+  MenuUnfoldOutlined,
+  MoonOutlined,
+  ReloadOutlined,
+  SettingOutlined,
+  SunOutlined,
+  SyncOutlined,
+  UserOutlined,
+} from '@ant-design/icons'
+import zhCN from 'antd/locale/zh_CN'
+import dayjs from 'dayjs'
+import { api, type ApiKey, type Dashboard, type Provider, type UsageRow } from './api.ts'
 import { useTheme, type Theme } from './theme.ts'
+
+const { Title, Text, Paragraph } = Typography
+const GITHUB_URL = 'https://github.com/anghunk/trae-proxy'
+
+interface DateRange {
+  from: string
+  to: string
+}
 
 type View = 'overview' | 'providers' | 'keys' | 'usage' | 'logs' | 'provider-detail' | 'settings-password' | 'settings-gateway'
 
-const VIEWS: Array<{ id: View; label: string }> = [
-  { id: 'overview', label: '控制台' },
-  { id: 'providers', label: '渠道模型' },
-  { id: 'keys', label: 'API Keys' },
-  { id: 'usage', label: '用量统计' },
-  { id: 'logs', label: '使用日志' },
-  { id: 'settings-password', label: '系统设置' },
-]
-
-const SETTING_VIEWS: Array<{ id: View; path: string; label: string }> = [
-  { id: 'settings-password', path: 'password', label: '修改密码' },
-  { id: 'settings-gateway', path: 'gateway', label: '网关信息' },
+const SETTING_VIEWS: Array<{ id: View; label: string }> = [
+  { id: 'settings-password', label: '修改密码' },
+  { id: 'settings-gateway', label: '网关信息' },
 ]
 
 function viewFromPath(): View {
@@ -291,10 +346,7 @@ function ContributionWall({ days }: { days: ContributionDay[] }) {
   }, [days])
 
   return (
-    <div className="panel contribution-panel">
-      <div className="panel-head">
-        <h2>请求活跃度</h2>
-      </div>
+    <Card className="page-card contribution-panel" title="请求活跃度">
       <div className="contribution-scroll">
         <div
           className="contribution-calendar"
@@ -352,7 +404,7 @@ function ContributionWall({ days }: { days: ContributionDay[] }) {
           <span><strong>{calendar.activeDays}</strong> 个活跃日</span>
         </div>
       </div>
-    </div>
+    </Card>
   )
 }
 
@@ -454,13 +506,18 @@ function Field({
   children: React.ReactNode
 }) {
   return (
-    <label className="field">
-      <span className="field-head">
-        <span className="field-label">{label}</span>
-        {hint !== undefined && <span className="field-hint" title={hint}>{hint}</span>}
-      </span>
+    <Form.Item label={label} tooltip={hint}>
       {children}
-    </label>
+    </Form.Item>
+  )
+}
+
+/** 页面级操作区：统一放在顶部标题下方，避免重复渲染页面标题。 */
+function PageActions({ children }: { children: React.ReactNode }) {
+  return (
+    <Flex justify="flex-end" align="center" gap={12} wrap="wrap" className="page-actions">
+      {children}
+    </Flex>
   )
 }
 
@@ -479,19 +536,11 @@ function ProviderToggle({
   disabled?: boolean
 }) {
   return (
-    <button
-      type="button"
-      role="switch"
-      aria-checked={enabled}
-      className={`switch${enabled ? ' on' : ''}`}
-      onClick={() => onChange(!enabled)}
+    <Switch
+      checked={enabled}
+      onChange={onChange}
       disabled={disabled}
-    >
-      <span className="switch-track" aria-hidden="true">
-        <span className="switch-thumb" />
-      </span>
-      <span className="switch-label">{enabled ? '启用' : '停用'}</span>
-    </button>
+    />
   )
 }
 
@@ -516,7 +565,27 @@ function providerEnabledPatch(provider: Provider, enabled: boolean): Parameters<
 }
 
 function Spinner({ label }: { label: string }) {
-  return <div className="spinner">{label}...</div>
+  return (
+    <Flex align="center" justify="center" gap={12} className="spinner">
+      <Spin />
+      <Text type="secondary">{label}</Text>
+    </Flex>
+  )
+}
+
+/** 页面底部的 GitHub 仓库链接。 */
+function GitHubLink({ className }: { className?: string }) {
+  return (
+    <a
+      className={className === undefined ? 'github-link' : `github-link ${className}`}
+      href={GITHUB_URL}
+      target="_blank"
+      rel="noreferrer"
+    >
+      <GithubOutlined />
+      GitHub
+    </a>
+  )
 }
 
 function useAsync<T>(fn: () => Promise<T>, deps: unknown[]): { data: T | undefined; error: string | undefined; loading: boolean; reload: () => void } {
@@ -554,32 +623,16 @@ function ThemeToggle({ theme, onToggle, floating = false }: {
   const target = theme === 'dark' ? '明亮' : '黑夜'
   const label = `切换到${target}主题`
   return (
-    <button
-      type="button"
-      className={floating ? 'theme-toggle floating' : 'theme-toggle'}
-      onClick={onToggle}
-      title={label}
-      aria-label={label}
-    >
-      {theme === 'dark' ? <SunIcon /> : <MoonIcon />}
-    </button>
-  )
-}
-
-function SunIcon() {
-  return (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" aria-hidden="true">
-      <circle cx="12" cy="12" r="5" />
-      <path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42" />
-    </svg>
-  )
-}
-
-function MoonIcon() {
-  return (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" />
-    </svg>
+    <Tooltip title={label}>
+      <Button
+        type="text"
+        shape="circle"
+        className={floating ? 'theme-toggle floating' : 'theme-toggle'}
+        onClick={onToggle}
+        aria-label={label}
+        icon={theme === 'dark' ? <SunOutlined /> : <MoonOutlined />}
+      />
+    </Tooltip>
   )
 }
 
@@ -595,6 +648,13 @@ function AuthScreen({ onDone, theme, onToggleTheme }: {
   const [error, setError] = useState<string | undefined>(undefined)
   const [busy, setBusy] = useState(false)
 
+  const switchMode = (next: 'setup' | 'login'): void => {
+    setMode(next)
+    setPassword('')
+    setConfirm('')
+    setError(undefined)
+  }
+
   useEffect(() => {
     api.session()
       .then(session => {
@@ -604,8 +664,7 @@ function AuthScreen({ onDone, theme, onToggleTheme }: {
       .catch(() => setMode('login'))
   }, [onDone])
 
-  const submit = async (event: FormEvent): Promise<void> => {
-    event.preventDefault()
+  const submit = async (): Promise<void> => {
     setError(undefined)
     if (mode === 'setup' && password !== confirm) {
       setError('两次输入的密码不一致')
@@ -629,43 +688,56 @@ function AuthScreen({ onDone, theme, onToggleTheme }: {
   return (
     <div className="auth-shell">
       <ThemeToggle theme={theme} onToggle={onToggleTheme} floating />
-      <form className="auth-card" onSubmit={event => { void submit(event) }}>
+      <GitHubLink className="auth-github" />
+      <Card className="auth-card">
         <img className="brand-mark" src="/logo.png" alt="Trae Proxy" />
-        <h1>{mode === 'setup' ? '创建管理员' : '登录管理台'}</h1>
-        <p className="auth-sub">
+        <Title level={3}>{mode === 'setup' ? '创建管理员' : '登录管理台'}</Title>
+        <Paragraph type="secondary">
           {mode === 'setup' ? '首次启动需要初始化本地管理员账户。' : '使用管理员账户登录统一网关控制台。'}
-        </p>
-        <Field label="用户名">
-          <input value={username} onChange={event => setUsername(event.target.value)} autoComplete="username" />
-        </Field>
-        <Field label="密码">
-          <input
-            type="password"
-            value={password}
-            onChange={event => setPassword(event.target.value)}
-            autoComplete={mode === 'setup' ? 'new-password' : 'current-password'}
-          />
-        </Field>
-        {mode === 'setup' && (
-          <Field label="确认密码">
-            <input
-              type="password"
-              value={confirm}
-              onChange={event => setConfirm(event.target.value)}
-              autoComplete="new-password"
+        </Paragraph>
+        <Form layout="vertical" onFinish={() => { void submit() }}>
+          <Field label="用户名">
+            <Input
+              value={username}
+              onChange={event => setUsername(event.target.value)}
+              autoComplete="username"
+              prefix={<UserOutlined />}
             />
           </Field>
-        )}
-        {error !== undefined && <div className="alert error">{error}</div>}
-        <button className="primary wide" disabled={busy}>
-          {busy ? '提交中...' : mode === 'setup' ? '创建并进入' : '登录'}
-        </button>
-        {mode === 'login' && (
-          <button type="button" className="link-button" onClick={() => setMode('setup')}>
-            未初始化？创建管理员
-          </button>
-        )}
-      </form>
+          <Field label="密码">
+            <Input.Password
+              value={password}
+              onChange={event => setPassword(event.target.value)}
+              autoComplete={mode === 'setup' ? 'new-password' : 'current-password'}
+              prefix={<LockOutlined />}
+            />
+          </Field>
+          {mode === 'setup' && (
+            <Field label="确认密码">
+              <Input.Password
+                value={confirm}
+                onChange={event => setConfirm(event.target.value)}
+                autoComplete="new-password"
+                prefix={<LockOutlined />}
+              />
+            </Field>
+          )}
+          {error !== undefined && <Alert type="error" showIcon title={error} style={{ marginBottom: 16 }} />}
+          <Button type="primary" htmlType="submit" loading={busy} block size="large">
+            {mode === 'setup' ? '创建并进入' : '登录'}
+          </Button>
+          {mode === 'login' && (
+            <Button type="link" htmlType="button" block onClick={() => switchMode('setup')}>
+              未初始化？创建管理员
+            </Button>
+          )}
+          {mode === 'setup' && (
+            <Button type="link" htmlType="button" block onClick={() => switchMode('login')}>
+              已有管理员，去登录
+            </Button>
+          )}
+        </Form>
+      </Card>
     </div>
   )
 }
@@ -723,35 +795,43 @@ function CallFormatPanel() {
   }
 
   return (
-    <div className="panel">
-      <div className="panel-head call-formats-head">
-        <div>
-          <h2>支持的调用格式</h2>
-          <div className="panel-note">OpenAI 兼容接口，认证头 Authorization: Bearer &lt;API_KEY&gt;</div>
-        </div>
-        <code className="mono endpoint">{origin}/v1</code>
-      </div>
-      <div className="call-formats">
+    <Card
+      className="page-card"
+      title="支持的调用格式"
+      extra={<Text code>{origin}/v1</Text>}
+    >
+      <Paragraph type="secondary" style={{ marginTop: -8 }}>
+        OpenAI 兼容接口，认证头 Authorization: Bearer &lt;API_KEY&gt;
+      </Paragraph>
+      <Flex vertical>
         {formats.map(format => (
-          <div className="call-format" key={format.id}>
-            <span className={`method-badge ${format.method.toLowerCase()}`}>{format.method}</span>
-            <code className="mono call-format-path">{format.path}</code>
-            <span className="call-format-description">
-              <span>{format.name} ·</span>
-              {format.description}
-            </span>
-            <button
-              type="button"
-              className={`text-button call-format-copy${copied === format.id ? ' copied' : ''}`}
+          <Flex
+            key={format.id}
+            align="center"
+            justify="space-between"
+            gap={12}
+            wrap="wrap"
+            className="call-format-row"
+          >
+            <Flex align="center" gap={12} wrap="wrap" style={{ minWidth: 0 }}>
+              <Tag color={format.method === 'POST' ? 'blue' : 'default'}>{format.method}</Tag>
+              <Text code>{format.path}</Text>
+              <Text type="secondary">
+                {format.name} · {format.description}
+              </Text>
+            </Flex>
+            <Button
+              type="link"
+              size="small"
+              icon={<CopyOutlined />}
               onClick={() => { void copyAddress(format) }}
-              aria-label={`复制 ${format.method} ${format.path} 地址`}
             >
               {copied === format.id ? '已复制' : '复制地址'}
-            </button>
-          </div>
+            </Button>
+          </Flex>
         ))}
-      </div>
-    </div>
+      </Flex>
+    </Card>
   )
 }
 
@@ -772,112 +852,115 @@ function Overview({ providers, dashboard, onRefresh }: {
   const providerRows = dashboard?.usage.today.byProvider ?? []
   const maxModelTokens = Math.max(...modelRows.map(row => row.totalTokens), 0)
   const maxProviderTokens = Math.max(...providerRows.map(row => row.totalTokens), 0)
+  const columns: TableColumnsType<Provider> = [
+    {
+      title: '名称',
+      dataIndex: 'name',
+      render: (_value, provider) => (
+        <Space orientation="vertical" size={0}>
+          <Text strong>{provider.name}</Text>
+          <Text type="secondary" code>{provider.id}</Text>
+        </Space>
+      ),
+    },
+    {
+      title: '类型',
+      dataIndex: 'type',
+      render: value => TYPE_LABEL[value as Provider['type']],
+    },
+    {
+      title: '状态',
+      dataIndex: 'enabled',
+      render: enabled => (
+        <Tag color={enabled ? 'success' : 'default'}>{enabled ? '启用' : '停用'}</Tag>
+      ),
+    },
+    {
+      title: '模型数',
+      render: (_value, provider) => provider.modelCount ?? provider.models.length,
+    },
+    {
+      title: '更新时间',
+      dataIndex: 'updatedAt',
+      render: value => formatDate(value as number),
+    },
+  ]
+
   return (
     <section>
-      <div className="stat-grid">
+      <Row gutter={[12, 12]} className="page-section">
         {cards.map(card => (
-          <div className="stat-card" key={card.label}>
-            <span className="stat-label">{card.label}</span>
-            <span className="stat-value">{card.value}</span>
-          </div>
+          <Col xs={24} sm={12} xl={6} key={card.label}>
+            <Card>
+              <Statistic title={card.label} value={card.value} />
+            </Card>
+          </Col>
         ))}
-      </div>
-      <div className="overview-actions">
-        <button className="secondary compact" onClick={onRefresh}>刷新</button>
-      </div>
+      </Row>
+      <Flex justify="flex-end" className="page-section">
+        <Button icon={<ReloadOutlined />} onClick={onRefresh}>刷新</Button>
+      </Flex>
       <CallFormatPanel />
-      <div className="usage-mini-grid">
-        <div className="panel">
-          <div className="panel-head">
-            <h2>今日模型用量</h2>
-          </div>
+      <Row gutter={[16, 16]} className="page-section">
+        <Col xs={24} xl={12}>
+          <Card className="page-card" title="今日模型用量">
           {modelRows.length === 0 ? (
-            <div className="empty">今日暂无模型请求</div>
+            <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="今日暂无模型请求" />
           ) : (
-            <div className="usage-rows">
+            <Flex vertical gap={16}>
               {modelRows.slice(0, 6).map(row => (
-                <div className="usage-row" key={row.model}>
-                  <div className="usage-row-head">
-                    <span className="mono">{row.model}</span>
-                    <span className="usage-row-value">{formatToken(row.totalTokens)}</span>
-                  </div>
-                  <div className="usage-bar">
-                    {row.totalTokens > 0 && (
-                      <div
-                        className="usage-bar-fill"
-                        style={{ width: `${Math.max(2, (row.totalTokens / maxModelTokens) * 100)}%` }}
-                        title={`${row.requests} 次请求`}
-                      />
-                    )}
-                  </div>
+                <div key={row.model}>
+                  <Flex justify="space-between" gap={12}>
+                    <Text code ellipsis>{row.model}</Text>
+                    <Text type="secondary">{formatToken(row.totalTokens)}</Text>
+                  </Flex>
+                  <Progress
+                    percent={row.totalTokens <= 0 ? 0 : Math.max(2, (row.totalTokens / maxModelTokens) * 100)}
+                    showInfo={false}
+                    size="small"
+                  />
                 </div>
               ))}
-            </div>
+            </Flex>
           )}
-        </div>
-        <div className="panel">
-          <div className="panel-head">
-            <h2>今日渠道用量</h2>
-          </div>
+          </Card>
+        </Col>
+        <Col xs={24} xl={12}>
+          <Card className="page-card" title="今日渠道用量">
           {providerRows.length === 0 ? (
-            <div className="empty">今日暂无渠道请求</div>
+            <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="今日暂无渠道请求" />
           ) : (
-            <div className="usage-rows">
+            <Flex vertical gap={16}>
               {providerRows.slice(0, 6).map(row => (
-                <div className="usage-row" key={row.providerId}>
-                  <div className="usage-row-head">
-                    <span className="mono">{row.providerId}</span>
-                    <span className="usage-row-value">
+                <div key={row.providerId}>
+                  <Flex justify="space-between" gap={12}>
+                    <Text code ellipsis>{row.providerId}</Text>
+                    <Text type="secondary">
                       {formatNumber(row.requests)} 次 · {formatToken(row.totalTokens)}
-                    </span>
-                  </div>
-                  <div className="usage-bar">
-                    {row.totalTokens > 0 && (
-                      <div
-                        className="usage-bar-fill"
-                        style={{ width: `${Math.max(2, (row.totalTokens / maxProviderTokens) * 100)}%` }}
-                        title={`${formatToken(row.totalTokens)} tokens`}
-                      />
-                    )}
-                  </div>
+                    </Text>
+                  </Flex>
+                  <Progress
+                    percent={row.totalTokens <= 0 ? 0 : Math.max(2, (row.totalTokens / maxProviderTokens) * 100)}
+                    showInfo={false}
+                    size="small"
+                  />
                 </div>
               ))}
-            </div>
+            </Flex>
           )}
-        </div>
-      </div>
-      <div className="panel">
-        <div className="panel-head">
-          <h2>渠道状态</h2>
-        </div>
-        <div className="table-wrap">
-          <table>
-            <thead>
-              <tr>
-                <th>名称</th>
-                <th>类型</th>
-                <th>状态</th>
-                <th>模型数</th>
-                <th>更新时间</th>
-              </tr>
-            </thead>
-            <tbody>
-              {providers.map(provider => (
-                <tr key={provider.id}>
-                  <td>
-                    <div className="cell-main">{provider.name}</div>
-                    <div className="cell-sub mono">{provider.id}</div>
-                  </td>
-                  <td>{TYPE_LABEL[provider.type]}</td>
-                  <td>{provider.enabled ? <span className="badge success">启用</span> : <span className="badge">停用</span>}</td>
-                  <td>{provider.modelCount ?? provider.models.length}</td>
-                  <td>{formatDate(provider.updatedAt)}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </div>
+          </Card>
+        </Col>
+      </Row>
+      <Card className="page-card" title="渠道状态">
+        <Table
+          rowKey="id"
+          columns={columns}
+          dataSource={providers}
+          pagination={false}
+          locale={{ emptyText: <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无渠道" /> }}
+          scroll={{ x: 720 }}
+        />
+      </Card>
     </section>
   )
 }
@@ -886,7 +969,6 @@ function ChannelsView({ onOpenDetail }: { onOpenDetail: (id: string) => void }) 
   const { data, error, loading, reload } = useAsync(() => api.providers(), [])
   const [creating, setCreating] = useState(false)
   const [actionError, setActionError] = useState<string | undefined>(undefined)
-  const [refreshResult, setRefreshResult] = useState<Record<string, string>>({})
   const [toggling, setToggling] = useState<Record<string, boolean>>({})
 
   const setEnabled = async (provider: Provider, enabled: boolean): Promise<void> => {
@@ -906,19 +988,7 @@ function ChannelsView({ onOpenDetail }: { onOpenDetail: (id: string) => void }) 
     }
   }
 
-  const refresh = async (id: string): Promise<void> => {
-    setActionError(undefined)
-    try {
-      const result = await api.refreshProvider(id)
-      setRefreshResult(current => ({ ...current, [id]: `已刷新 ${result.count} 个模型` }))
-      reload()
-    } catch (reason) {
-      setActionError(reason instanceof Error ? reason.message : String(reason))
-    }
-  }
-
   const remove = async (provider: Provider): Promise<void> => {
-    if (!window.confirm(`删除 provider ${provider.id}？此操作不可撤销。`)) return
     setActionError(undefined)
     try {
       await api.deleteProvider(provider.id)
@@ -928,15 +998,67 @@ function ChannelsView({ onOpenDetail }: { onOpenDetail: (id: string) => void }) 
     }
   }
 
+  const columns: TableColumnsType<Provider> = [
+    {
+      title: '名称',
+      dataIndex: 'name',
+      render: (_value, provider) => (
+        <Space orientation="vertical" size={0}>
+          <Text strong>{provider.name}</Text>
+          <Text type="secondary" code>{provider.id}</Text>
+        </Space>
+      ),
+    },
+    {
+      title: '类型',
+      dataIndex: 'type',
+      render: value => TYPE_LABEL[value as Provider['type']],
+    },
+    {
+      title: '状态',
+      dataIndex: 'enabled',
+      render: (enabled, provider) => (
+        <ProviderToggle
+          enabled={enabled}
+          disabled={toggling[provider.id] === true}
+          onChange={next => { void setEnabled(provider, next) }}
+        />
+      ),
+    },
+    {
+      title: '模型',
+      render: (_value, provider) => provider.modelCount !== undefined
+        ? `${provider.modelCount}${provider.models.length > 0 ? ` / 映射 ${provider.models.length}` : ''}`
+        : provider.models.length > 0 ? `${provider.models.length}（映射）` : '动态',
+    },
+    {
+      title: '操作',
+      width: 160,
+      render: (_value, provider) => (
+        <Space size={4} wrap>
+          <Button size="small" onClick={() => onOpenDetail(provider.id)}>详情</Button>
+          <Popconfirm
+            title="删除渠道"
+            description={`确定删除 ${provider.id}？此操作不可撤销。`}
+            okText="删除"
+            cancelText="取消"
+            onConfirm={() => { void remove(provider) }}
+          >
+            <Button size="small" danger icon={<DeleteOutlined />}>删除</Button>
+          </Popconfirm>
+        </Space>
+      ),
+    },
+  ]
+
   return (
     <section>
-      <div className="panel-head">
-        <h2>渠道</h2>
-        <button className="primary" onClick={() => setCreating(true)}>
+      <PageActions>
+        <Button type="primary" onClick={() => setCreating(true)}>
           新增渠道
-        </button>
-      </div>
-      {actionError !== undefined && <div className="alert error">{actionError}</div>}
+        </Button>
+      </PageActions>
+      {actionError !== undefined && <Alert type="error" showIcon title={actionError} className="page-alert" />}
       {creating && (
         <ChannelForm
             onCancel={() => setCreating(false)}
@@ -946,67 +1068,20 @@ function ChannelsView({ onOpenDetail }: { onOpenDetail: (id: string) => void }) 
             }}
         />
       )}
-      <div className="panel">
+      <Card className="page-card">
         {loading && <Spinner label="加载中" />}
-        {error !== undefined && <div className="alert error">{error}</div>}
+        {error !== undefined && <Alert type="error" showIcon title={error} className="page-alert" />}
         {!loading && data !== undefined && (
-          <div className="table-wrap">
-            <table>
-              <thead>
-                <tr>
-                  <th>名称</th>
-                  <th>类型</th>
-                  <th>状态</th>
-                  <th>模型</th>
-                  <th>操作</th>
-                </tr>
-              </thead>
-              <tbody>
-                {data.data.map(provider => (
-                  <tr key={provider.id}>
-                    <td>
-                      <div className="cell-main">{provider.name}</div>
-                      <div className="cell-sub mono">{provider.id}</div>
-                    </td>
-                    <td>{TYPE_LABEL[provider.type]}</td>
-                    <td>
-                      <ProviderToggle
-                        enabled={provider.enabled}
-                        disabled={toggling[provider.id] === true}
-                        onChange={next => { void setEnabled(provider, next) }}
-                      />
-                    </td>
-                    <td>
-                      {provider.modelCount !== undefined
-                        ? `${provider.modelCount}${provider.models.length > 0 ? ` / 映射 ${provider.models.length}` : ''}`
-                        : provider.models.length > 0 ? `${provider.models.length}（映射）` : '动态'}
-                    </td>
-                    <td>
-                      <div className="row-actions">
-                        <button
-                          className="secondary compact"
-                          onClick={() => onOpenDetail(provider.id)}
-                        >
-                          详情
-                        </button>
-                        <button className="secondary compact" onClick={() => { void refresh(provider.id) }}>刷新模型</button>
-                        <button className="secondary compact danger" onClick={() => { void remove(provider) }}>删除</button>
-                      </div>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+          <Table
+            rowKey="id"
+            columns={columns}
+            dataSource={data.data}
+            pagination={false}
+            scroll={{ x: 860 }}
+            locale={{ emptyText: <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无渠道" /> }}
+          />
         )}
-        {refreshResult !== undefined && Object.keys(refreshResult).length > 0 && (
-          <div className="toast-row">
-            {Object.entries(refreshResult).map(([id, message]) => (
-              <span key={id} className="toast">{message}</span>
-            ))}
-          </div>
-        )}
-      </div>
+      </Card>
     </section>
   )
 }
@@ -1123,8 +1198,7 @@ function ChannelForm({
     }
   }
 
-  const submit = async (event: FormEvent): Promise<void> => {
-    event.preventDefault()
+  const submit = async (): Promise<void> => {
     setError(undefined)
     setSuccess(undefined)
     const invalid = validate()
@@ -1153,96 +1227,119 @@ function ChannelForm({
   }
 
   return (
-    <div className="panel editor">
-      <form className="provider-form" onSubmit={event => { void submit(event) }}>
+    <Card className="page-card page-form-card">
+      <Form layout="vertical" onFinish={() => { void submit() }}>
         {!isEdit && (
-          <div className="preset-section">
-            <div className="preset-head">
-              <span>官方渠道</span>
-              <span className="preset-hint">点击后自动填充渠道信息</span>
-            </div>
-            <div className="preset-grid">
+          <div className="form-section">
+            <Flex justify="space-between" gap={12} wrap="wrap" style={{ marginBottom: 12 }}>
+              <Text strong>官方渠道</Text>
+              <Text type="secondary">点击后自动填充渠道信息</Text>
+            </Flex>
+            <Row gutter={[12, 12]}>
               {OFFICIAL_PRESETS.map(preset => (
-                <button
-                  type="button"
-                  key={preset.id}
-                  className={`preset-card${presetId === preset.id ? ' active' : ''}`}
-                  onClick={() => applyPreset(preset)}
-                >
-                  <span className="preset-name">{preset.name}</span>
-                  <span className="preset-models">{preset.hint}</span>
-                </button>
+                <Col xs={24} sm={12} lg={8} xl={6} key={preset.id}>
+                  <Card
+                    size="small"
+                    hoverable
+                    className={presetId === preset.id ? 'preset-selected' : ''}
+                    onClick={() => applyPreset(preset)}
+                  >
+                    <Space orientation="vertical" size={2}>
+                      <Text strong>{preset.name}</Text>
+                      <Text type="secondary">{preset.hint}</Text>
+                    </Space>
+                  </Card>
+                </Col>
               ))}
-            </div>
+            </Row>
           </div>
         )}
-        <div className="channel-grid">
-          <div className="channel-main">
-            <div className="form-grid">
+        <Row gutter={[24, 16]}>
+          <Col xs={24} xl={14}>
+            <Row gutter={16}>
+              <Col xs={24} md={12}>
               <Field label="渠道 ID" hint="作为模型前缀，保存后不可变更">
-                <input
+                <Input
                   value={id}
                   onChange={event => setId(event.target.value.toLowerCase())}
                   placeholder="如 deepseek"
                   disabled={isEdit}
                 />
               </Field>
+              </Col>
+              <Col xs={24} md={12}>
               <Field label="名称">
-                <input value={name} onChange={event => setName(event.target.value)} placeholder="如 DeepSeek 官方" />
+                <Input value={name} onChange={event => setName(event.target.value)} placeholder="如 DeepSeek 官方" />
               </Field>
+              </Col>
+              <Col xs={24} md={12}>
               <Field label="类型">
-                <select value={type} onChange={event => changeType(event.target.value as Provider['type'])} disabled={isEdit}>
-                  {(Object.keys(TYPE_LABEL) as Provider['type'][]).map(item => (
-                    <option key={item} value={item}>{TYPE_LABEL[item]}</option>
-                  ))}
-                </select>
+                <Select
+                  value={type}
+                  onChange={changeType}
+                  disabled={isEdit}
+                  options={(Object.keys(TYPE_LABEL) as Provider['type'][]).map(item => ({
+                    value: item,
+                    label: TYPE_LABEL[item],
+                  }))}
+                />
               </Field>
+              </Col>
+              <Col xs={24} md={12}>
               <Field label="状态">
                 <ProviderToggle enabled={enabled} onChange={setEnabled} />
               </Field>
+              </Col>
               {(type === 'openai' || type === 'anthropic' || type === 'gemini' || type === 'ollama') && (
                 <>
-                  <Field label="Base URL" hint={TYPE_HINT[type]}>
-                    <input value={baseUrl} onChange={event => setBaseUrl(event.target.value)} placeholder="https://..." />
-                  </Field>
-                  <Field label="API Key" hint={isEdit && initial?.apiKeySet ? '已保存，留空保持不变' : '明文保存在本地数据库'}>
-                    <input
-                      type="password"
-                      value={apiKey}
-                      onChange={event => setApiKey(event.target.value)}
-                      placeholder={isEdit && initial?.apiKeySet ? '••••••••' : 'sk-...'}
-                      autoComplete="new-password"
-                    />
-                  </Field>
+                  <Col xs={24} md={12}>
+                    <Field label="Base URL" hint={TYPE_HINT[type]}>
+                      <Input value={baseUrl} onChange={event => setBaseUrl(event.target.value)} placeholder="https://..." />
+                    </Field>
+                  </Col>
+                  <Col xs={24} md={12}>
+                    <Field label="API Key" hint={isEdit && initial?.apiKeySet ? '已保存，留空保持不变' : '明文保存在本地数据库'}>
+                      <Input.Password
+                        value={apiKey}
+                        onChange={event => setApiKey(event.target.value)}
+                        placeholder={isEdit && initial?.apiKeySet ? '••••••••' : 'sk-...'}
+                        autoComplete="new-password"
+                      />
+                    </Field>
+                  </Col>
                 </>
               )}
+              <Col xs={24} md={12}>
               <Field label="超时 (ms)">
-                <input
-                  type="number"
+                <InputNumber
                   min={1000}
                   step={1000}
                   value={timeoutMs}
-                  onChange={event => setTimeoutMs(Number(event.target.value))}
+                  onChange={value => setTimeoutMs(value ?? 120000)}
+                  style={{ width: '100%' }}
                 />
               </Field>
-            </div>
-            <div className="form-actions">
-              <button
-                type="button"
-                className="secondary"
+              </Col>
+            </Row>
+            <Space wrap>
+              <Button
+                htmlType="button"
+                icon={<SyncOutlined />}
                 onClick={() => { void testConnection() }}
                 disabled={testing || busy}
+                loading={testing}
               >
-                {testing ? '获取模型中...' : '获取全部模型'}
-              </button>
-              <button className="primary" disabled={busy || testing}>{busy ? '保存中...' : '保存并生效'}</button>
-              <button type="button" className="secondary" onClick={onCancel}>取消</button>
-            </div>
-          </div>
-          <div className="channel-models">
-            <div className="models-head">
-              <span>模型映射</span>
-              <span className="models-count">
+                获取全部模型
+              </Button>
+              <Button type="primary" htmlType="submit" loading={busy} disabled={testing}>保存并生效</Button>
+              <Button htmlType="button" onClick={onCancel}>取消</Button>
+            </Space>
+          </Col>
+          <Col xs={24} xl={10}>
+            <Divider titlePlacement="start" style={{ marginTop: 0 }}>模型映射</Divider>
+            <Flex justify="space-between" gap={12} wrap="wrap" style={{ marginBottom: 8 }}>
+              <Text type="secondary">留空表示映射该渠道全部模型</Text>
+              <Text type="secondary">
                 {modelOptions.length === 0
                   ? '点击获取全部模型'
                   : selected.length === 0
@@ -1250,60 +1347,59 @@ function ChannelForm({
                     : selectedUnavailable.length > 0
                       ? `映射 ${selected.length} 个（含 ${selectedUnavailable.length} 个不在目录）`
                       : `映射 ${selected.length} / ${models.length}`}
-              </span>
-            </div>
+              </Text>
+            </Flex>
             {modelOptions.length === 0 ? (
-              <div className="empty">点击「获取全部模型」查看并选择要映射的模型</div>
+              <Empty
+                image={Empty.PRESENTED_IMAGE_SIMPLE}
+                description="点击「获取全部模型」查看并选择要映射的模型"
+              />
             ) : (
               <>
                 {models.length > 0 && (
-                  <div className="models-tools">
-                    <button type="button" className="link-button" onClick={() => setSelected(models)}>全选</button>
-                    <button type="button" className="link-button" onClick={() => setSelected([])}>清空</button>
-                  </div>
+                  <Space size={8} style={{ marginBottom: 8 }}>
+                    <Button htmlType="button" type="link" size="small" onClick={() => setSelected(models)}>全选</Button>
+                    <Button htmlType="button" type="link" size="small" onClick={() => setSelected([])}>清空</Button>
+                  </Space>
                 )}
-                <div className="models-tip">留空表示映射该渠道全部模型，勾选后仅暴露所选模型</div>
                 {selectedUnavailable.length > 0 && (
-                  <div className="models-tip unavailable">
-                    有 {selectedUnavailable.length} 个已选模型不在当前目录，取消勾选并保存即可移除。
-                  </div>
+                  <Alert
+                    type="warning"
+                    showIcon
+                    title={`有 ${selectedUnavailable.length} 个已选模型不在当前目录，取消勾选并保存即可移除。`}
+                    style={{ marginBottom: 12 }}
+                  />
                 )}
-                <div className="model-list">
+                <Flex vertical gap={6} className="model-checklist">
                   {modelOptions.map(model => {
                     const checked = selected.includes(model)
                     const unavailable = selectedUnavailable.includes(model)
                     return (
-                      <label
+                      <Checkbox
                         key={model}
-                        className={[
-                          'model-item',
-                          checked ? 'selected' : '',
-                          unavailable ? 'unavailable' : '',
-                        ].filter(Boolean).join(' ')}
-                      >
-                        <input
-                          type="checkbox"
-                          checked={checked}
-                          onChange={event => {
-                            setSelected(current => event.target.checked
+                        checked={checked}
+                        onChange={event => {
+                          setSelected(current => event.target.checked
                               ? [...current, model]
                               : current.filter(item => item !== model))
-                          }}
-                        />
-                        <span className="mono model-name">{model}</span>
-                        {unavailable && <span className="model-unavailable">不在当前目录</span>}
-                      </label>
+                        }}
+                      >
+                        <Space>
+                          <Text code>{model}</Text>
+                          {unavailable && <Tag color="warning">不在当前目录</Tag>}
+                        </Space>
+                      </Checkbox>
                     )
                   })}
-                </div>
+                </Flex>
               </>
             )}
-          </div>
-        </div>
-        {error !== undefined && <div className="alert error">{error}</div>}
-        {success !== undefined && <div className="alert success">{success}</div>}
-      </form>
-    </div>
+          </Col>
+        </Row>
+        {error !== undefined && <Alert type="error" showIcon title={error} className="page-alert" />}
+        {success !== undefined && <Alert type="success" showIcon title={success} className="page-alert" />}
+      </Form>
+    </Card>
   )
 }
 
@@ -1384,7 +1480,6 @@ function ChannelDetail({ id, onBack, onDeleted }: {
   }
 
   const remove = async (): Promise<void> => {
-    if (!window.confirm(`删除渠道 ${id}？此操作不可撤销。`)) return
     setActionError(undefined)
     try {
       await api.deleteProvider(id)
@@ -1403,9 +1498,8 @@ function ChannelDetail({ id, onBack, onDeleted }: {
 
   return (
     <section>
-      <div className="panel-head">
-        <h2>渠道详情</h2>
-        <div className="row-actions">
+      <PageActions>
+        <Space wrap>
           {provider !== undefined && (
             <>
               <ProviderToggle
@@ -1413,22 +1507,28 @@ function ChannelDetail({ id, onBack, onDeleted }: {
                 disabled={toggling}
                 onChange={next => { void setEnabled(next) }}
               />
-              <button className="secondary compact" onClick={() => { void test() }} disabled={testing}>
-                {testing ? '检测中...' : '检测连通性'}
-              </button>
-              <button className="secondary compact" onClick={() => { void refresh() }} disabled={refreshing}>
-                {refreshing ? '获取中...' : '刷新模型'}
-              </button>
+              <Button onClick={() => { void test() }} disabled={testing} loading={testing}>检测连通性</Button>
+              <Button icon={<SyncOutlined />} onClick={() => { void refresh() }} disabled={refreshing} loading={refreshing}>
+                刷新模型
+              </Button>
             </>
           )}
-          <button className="secondary compact" onClick={() => { navigate('providers'); onBack() }}>返回</button>
-          <button className="secondary compact danger" onClick={() => { void remove() }}>删除</button>
-        </div>
-      </div>
-      {actionError !== undefined && <div className="alert error">{actionError}</div>}
-      {testResult !== undefined && <div className="alert success">{testResult}</div>}
+          <Button onClick={() => { navigate('providers'); onBack() }}>返回</Button>
+          <Popconfirm
+            title="删除渠道"
+            description={`确定删除 ${id}？此操作不可撤销。`}
+            okText="删除"
+            cancelText="取消"
+            onConfirm={() => { void remove() }}
+          >
+            <Button danger icon={<DeleteOutlined />}>删除</Button>
+          </Popconfirm>
+        </Space>
+      </PageActions>
+      {actionError !== undefined && <Alert type="error" showIcon title={actionError} className="page-alert" />}
+      {testResult !== undefined && <Alert type="success" showIcon title={testResult} className="page-alert" />}
       {loading && <Spinner label="加载中" />}
-      {error !== undefined && <div className="alert error">{error}</div>}
+      {error !== undefined && <Alert type="error" showIcon title={error} className="page-alert" />}
       {!loading && provider !== undefined && (
         <>
           <ChannelForm
@@ -1437,27 +1537,25 @@ function ChannelDetail({ id, onBack, onDeleted }: {
             onCancel={() => { navigate('providers'); onBack() }}
             onSaved={() => { void refresh(); reload() }}
           />
-          <div className="panel">
-            <div className="panel-head">
-              <h2>已开启模型</h2>
-            </div>
+          <Card className="page-card" title="已开启模型">
             {refreshing && previewModels.length === 0 ? (
               <Spinner label="正在获取全部模型" />
             ) : previewModels.length === 0 ? (
-              <div className="empty">
-                {refreshedModels.length > 0 ? '模型目录已拉取，当前映射全部模型' : '点击「刷新模型」拉取可用目录，当前映射全部模型'}
-              </div>
+              <Empty
+                image={Empty.PRESENTED_IMAGE_SIMPLE}
+                description={refreshedModels.length > 0 ? '模型目录已拉取，当前映射全部模型' : '点击「刷新模型」拉取可用目录，当前映射全部模型'}
+              />
             ) : (
-              <div>
-                <div className="model-tags">
+              <Space orientation="vertical" size={12} style={{ width: '100%' }}>
+                <Flex gap={8} wrap="wrap">
                   {previewModels.map(model => (
-                    <span key={model} className="model-tag mono">{model}</span>
+                    <Tag key={model} style={{ fontFamily: 'Geist Mono, ui-monospace, monospace' }}>{model}</Tag>
                   ))}
-                </div>
-                <div className="detail-note">{previewLabel}</div>
-              </div>
+                </Flex>
+                <Text type="secondary">{previewLabel}</Text>
+              </Space>
             )}
-          </div>
+          </Card>
         </>
       )}
     </section>
@@ -1560,129 +1658,130 @@ function KeyEditorModal({
   const selectedModelIds = new Set(draft.models)
 
   return (
-    <div className="modal-overlay" role="dialog" aria-modal="true">
-      <div className="modal">
-        <div className="modal-head">
-          <h3>{initial === undefined ? '新增密钥' : '编辑密钥'}</h3>
-          <button type="button" className="text-button" onClick={onClose}>关闭</button>
-        </div>
-        <div className="modal-body">
-          <div className="form-grid single-column">
-            <Field label="名称">
-              <input value={draft.name} onChange={event => setDraft(current => ({ ...current, name: event.target.value }))} placeholder="如 opencode" />
-            </Field>
-          </div>
-          <div className="permission-head">
-            <span>可访问范围</span>
-            <span className="permission-hint">留空表示全部渠道；勾选渠道后可进一步限定模型</span>
-          </div>
-          {providers.length === 0 ? (
-            <div className="empty">还没有可用渠道</div>
-          ) : (
-            <div className="permission-list">
-              {providers.map(provider => {
-                const enabled = draft.providers.includes(provider.id)
-                const models = modelCache[provider.id] ?? provider.models
-                const expandedHere = expanded === provider.id
-                return (
-                  <div key={provider.id} className={`permission-item${enabled ? ' enabled' : ''}`}>
-                    <div className="permission-row">
-                      <label className="permission-check">
-                        <input
-                          type="checkbox"
-                          checked={enabled}
-                          onChange={() => toggleProvider(provider)}
-                        />
-                        <span className="permission-name">{provider.name || provider.id}</span>
-                        <span className="mono permission-id">{provider.id}</span>
-                      </label>
-                      <div className="row-actions">
-                        {enabled && (
-                          <button
-                            type="button"
-                            className="link-button"
-                            onClick={() => {
-                              setExpanded(expandedHere ? undefined : provider.id)
-                              if (!expandedHere) void loadModels(provider)
-                            }}
-                          >
-                            {expandedHere ? '收起模型' : '选择模型'}
-                          </button>
-                        )}
-                        <span className="badge">{provider.modelCount ?? 0}</span>
-                      </div>
-                    </div>
-                    {expandedHere && enabled && (
-                      <div className="permission-models">
-                        {loadingModels[provider.id] && models.length === 0 ? (
-                          <div className="empty">正在加载模型...</div>
-                        ) : models.length === 0 ? (
-                          <div className="empty">暂无可选模型</div>
-                        ) : (
-                          <>
-                            <div className="models-tools">
-                              <button
-                                type="button"
-                                className="link-button"
-                                onClick={() => setDraft(current => {
-                                  const without = current.models.filter(model => !model.startsWith(`${provider.id}/`))
-                                  return { ...current, models: [...without, ...models.map(model => `${provider.id}/${model}`)] }
-                                })}
-                              >
-                                全选
-                              </button>
-                              <button
-                                type="button"
-                                className="link-button"
-                                onClick={() => setDraft(current => ({
-                                  ...current,
-                                  models: current.models.filter(model => !model.startsWith(`${provider.id}/`)),
-                                }))}
-                              >
-                                清空
-                              </button>
-                            </div>
-                            <div className="permission-model-list">
-                              {models.map(model => {
-                                const full = `${provider.id}/${model}`
-                                return (
-                                  <label key={full} className={`permission-model${selectedModelIds.has(full) ? ' selected' : ''}`}>
-                                    <input
-                                      type="checkbox"
-                                      checked={selectedModelIds.has(full)}
-                                      onChange={() => toggleModel(provider.id, model)}
-                                    />
-                                    <span className="mono">{model}</span>
-                                  </label>
-                                )
+    <Modal
+      open
+      title={initial === undefined ? '新增密钥' : '编辑密钥'}
+      onCancel={onClose}
+      onOk={() => { void submit() }}
+      okText={initial === undefined ? '创建密钥' : '保存'}
+      cancelText="取消"
+      confirmLoading={busy}
+      okButtonProps={{ disabled: draft.name.trim() === '' }}
+      width={760}
+    >
+      <Form layout="vertical">
+        <Field label="名称">
+          <Input
+            value={draft.name}
+            onChange={event => setDraft(current => ({ ...current, name: event.target.value }))}
+            placeholder="如 opencode"
+          />
+        </Field>
+      </Form>
+      <Flex justify="space-between" gap={12} wrap="wrap" style={{ marginBottom: 12 }}>
+        <Text strong>可访问范围</Text>
+        <Text type="secondary">留空表示全部渠道；勾选渠道后可进一步限定模型</Text>
+      </Flex>
+      {providers.length === 0 ? (
+        <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="还没有可用渠道" />
+      ) : (
+        <Flex vertical className="permission-list">
+          {providers.map(provider => {
+            const enabled = draft.providers.includes(provider.id)
+            const models = modelCache[provider.id] ?? provider.models
+            const expandedHere = expanded === provider.id
+            return (
+              <div className="permission-item" key={provider.id}>
+                <Flex vertical gap={12} style={{ width: '100%' }}>
+                  <Flex justify="space-between" align="center" gap={12} wrap="wrap">
+                    <Checkbox checked={enabled} onChange={() => toggleProvider(provider)}>
+                      <Space>
+                        <Text strong>{provider.name || provider.id}</Text>
+                        <Text type="secondary" code>{provider.id}</Text>
+                      </Space>
+                    </Checkbox>
+                    <Space>
+                      {enabled && (
+                        <Button
+                          type="link"
+                          size="small"
+                          onClick={() => {
+                            setExpanded(expandedHere ? undefined : provider.id)
+                            if (!expandedHere) void loadModels(provider)
+                          }}
+                        >
+                          {expandedHere ? '收起模型' : '选择模型'}
+                        </Button>
+                      )}
+                      <Tag>{provider.modelCount ?? 0} 个模型</Tag>
+                    </Space>
+                  </Flex>
+                  {expandedHere && enabled && (
+                    <div className="permission-models">
+                      {loadingModels[provider.id] && models.length === 0 ? (
+                        <Spinner label="正在加载模型" />
+                      ) : models.length === 0 ? (
+                        <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无可选模型" />
+                      ) : (
+                        <Space orientation="vertical" size={10} style={{ width: '100%' }}>
+                          <Space size={8}>
+                            <Button
+                              type="link"
+                              size="small"
+                              onClick={() => setDraft(current => {
+                                const without = current.models.filter(model => !model.startsWith(`${provider.id}/`))
+                                return { ...current, models: [...without, ...models.map(model => `${provider.id}/${model}`)] }
                               })}
-                            </div>
-                          </>
-                        )}
-                      </div>
-                    )}
-                  </div>
-                )
-              })}
-            </div>
-          )}
-          <div className="permission-summary">
-            {draft.providers.length === 0 && draft.models.length === 0
-              ? '允许访问全部渠道与全部模型'
-              : draft.models.length > 0
-                ? `已限定 ${draft.models.length} 个模型`
-                : `已限定 ${draft.providers.length} 个渠道`}
-          </div>
-          {error !== undefined && <div className="alert error">{error}</div>}
-        </div>
-        <div className="modal-foot">
-          <button type="button" className="secondary" onClick={onClose}>取消</button>
-          <button type="button" className="primary" onClick={() => { void submit() }} disabled={busy || draft.name.trim() === ''}>
-            {busy ? '保存中...' : initial === undefined ? '创建密钥' : '保存'}
-          </button>
-        </div>
-      </div>
-    </div>
+                            >
+                              全选
+                            </Button>
+                            <Button
+                              type="link"
+                              size="small"
+                              onClick={() => setDraft(current => ({
+                                ...current,
+                                models: current.models.filter(model => !model.startsWith(`${provider.id}/`)),
+                              }))}
+                            >
+                              清空
+                            </Button>
+                          </Space>
+                          <Flex vertical gap={6}>
+                            {models.map(model => {
+                              const full = `${provider.id}/${model}`
+                              return (
+                                <Checkbox
+                                  key={full}
+                                  checked={selectedModelIds.has(full)}
+                                  onChange={() => toggleModel(provider.id, model)}
+                                >
+                                  <Text code>{model}</Text>
+                                </Checkbox>
+                              )
+                            })}
+                          </Flex>
+                        </Space>
+                      )}
+                    </div>
+                  )}
+                </Flex>
+              </div>
+            )
+          })}
+        </Flex>
+      )}
+      <Alert
+        type="info"
+        showIcon
+        style={{ marginTop: 16 }}
+        title={draft.providers.length === 0 && draft.models.length === 0
+          ? '允许访问全部渠道与全部模型'
+          : draft.models.length > 0
+            ? `已限定 ${draft.models.length} 个模型`
+            : `已限定 ${draft.providers.length} 个渠道`}
+      />
+      {error !== undefined && <Alert type="error" showIcon title={error} style={{ marginTop: 12 }} />}
+    </Modal>
   )
 }
 
@@ -1692,24 +1791,11 @@ function KeysView() {
   const [modal, setModal] = useState<{ mode: 'create' } | { mode: 'edit'; key: ApiKey } | undefined>(undefined)
   const [created, setCreated] = useState<ApiKey & { key: string } | undefined>(undefined)
   const [actionError, setActionError] = useState<string | undefined>(undefined)
-  const [menu, setMenu] = useState<{ id: string; x: number; y: number } | undefined>(undefined)
   const [busyKey, setBusyKey] = useState<string | undefined>(undefined)
   const [copiedKey, setCopiedKey] = useState<string | undefined>(undefined)
   const [actionSuccess, setActionSuccess] = useState<string | undefined>(undefined)
 
-  useEffect(() => {
-    if (menu === undefined) return
-    const close = (event: MouseEvent): void => {
-      const target = event.target
-      if (!(target instanceof Element) || target.closest('.popover-menu') !== null) return
-      setMenu(undefined)
-    }
-    document.addEventListener('mousedown', close)
-    return () => document.removeEventListener('mousedown', close)
-  }, [menu])
-
   const fillCcSwitch = async (key: ApiKey): Promise<void> => {
-    setMenu(undefined)
     setBusyKey(key.id)
     setActionError(undefined)
     setActionSuccess(undefined)
@@ -1724,7 +1810,6 @@ function KeysView() {
   }
 
   const remove = async (key: ApiKey): Promise<void> => {
-    if (!window.confirm(`删除 ${key.name}？`)) return
     setActionError(undefined)
     try {
       await api.deleteApiKey(key.id)
@@ -1749,86 +1834,132 @@ function KeysView() {
     }
   }
 
-  const menuKey = menu === undefined || data === undefined ? undefined : data.data.find(item => item.id === menu.id)
+  const columns: TableColumnsType<ApiKey> = [
+    {
+      title: '名称',
+      dataIndex: 'name',
+      render: value => <Text strong>{value as string}</Text>,
+    },
+    {
+      title: '密钥',
+      render: (_value, key) => (
+        <Space size={4}>
+          <Text code>{key.keyPrefix}...</Text>
+          <Tooltip title={key.plaintextStored ? '复制密钥明文' : '旧版密钥未保留明文'}>
+            <Button
+              type="link"
+              size="small"
+              disabled={!key.plaintextStored}
+              icon={<CopyOutlined />}
+              onClick={() => { void copyKey(key) }}
+            >
+              {copiedKey === key.id ? '已复制' : '复制'}
+            </Button>
+          </Tooltip>
+        </Space>
+      ),
+    },
+    {
+      title: '可访问',
+      render: (_value, key) => permissionLabel(key.modelPrefixes, key.modelIds),
+    },
+    {
+      title: '创建时间',
+      dataIndex: 'createdAt',
+      render: value => formatDate(value as number),
+    },
+    {
+      title: '状态',
+      render: (_value, key) => (
+        <Tag color={key.revokedAt === undefined ? 'success' : 'default'}>
+          {key.revokedAt === undefined ? '有效' : '已吊销'}
+        </Tag>
+      ),
+    },
+    {
+      title: '操作',
+      width: 220,
+      render: (_value, key) => (
+        <Space size={4} wrap>
+          <Button
+            type="link"
+            size="small"
+            icon={<EditOutlined />}
+            onClick={() => setModal({ mode: 'edit', key })}
+          >
+            编辑
+          </Button>
+          <Dropdown
+            trigger={['click']}
+            menu={{
+              items: [
+                {
+                  key: 'fill',
+                  icon: <LinkOutlined />,
+                  label: busyKey === key.id ? '唤起中...' : '填充到 CC-switch',
+                  disabled: !key.plaintextStored || busyKey === key.id,
+                },
+              ],
+              onClick: () => { void fillCcSwitch(key) },
+            }}
+          >
+            <Button type="link" size="small" disabled={key.revokedAt !== undefined}>配置</Button>
+          </Dropdown>
+          <Popconfirm
+            title="删除密钥"
+            description={`确定删除 ${key.name}？`}
+            okText="删除"
+            cancelText="取消"
+            onConfirm={() => { void remove(key) }}
+          >
+            <Button type="link" size="small" danger icon={<DeleteOutlined />}>删除</Button>
+          </Popconfirm>
+        </Space>
+      ),
+    },
+  ]
 
   return (
     <section>
-      <div className="panel-head">
-        <h2>API Keys</h2>
-        <button className="primary" onClick={() => setModal({ mode: 'create' })}>新增密钥</button>
-      </div>
+      <PageActions>
+        <Button type="primary" onClick={() => setModal({ mode: 'create' })}>新增密钥</Button>
+      </PageActions>
       {created !== undefined && (
-        <div className="alert success key-reveal">
-          <div className="alert-title">请立即复制，明文只显示一次</div>
-          <code className="key-value">{created.key}</code>
-          <button className="secondary" onClick={() => { void navigator.clipboard.writeText(created.key) }}>复制</button>
-        </div>
+        <Alert
+          type="success"
+          showIcon
+          className="page-alert"
+          title="请立即复制，明文只显示一次"
+          description={(
+            <Space wrap>
+              <Text code style={{ wordBreak: 'break-all' }}>{created.key}</Text>
+              <Button
+                size="small"
+                icon={<CopyOutlined />}
+                onClick={() => { void navigator.clipboard.writeText(created.key) }}
+              >
+                复制
+              </Button>
+            </Space>
+          )}
+        />
       )}
-      {actionSuccess !== undefined && <div className="alert success">{actionSuccess}</div>}
-      {actionError !== undefined && <div className="alert error">{actionError}</div>}
-      <div className="panel">
+      {actionSuccess !== undefined && <Alert type="success" showIcon title={actionSuccess} className="page-alert" />}
+      {actionError !== undefined && <Alert type="error" showIcon title={actionError} className="page-alert" />}
+      <Card className="page-card">
         {loading && <Spinner label="加载中" />}
-        {error !== undefined && <div className="alert error">{error}</div>}
+        {error !== undefined && <Alert type="error" showIcon title={error} className="page-alert" />}
         {!loading && data !== undefined && (
-          <div className="table-wrap">
-            <table>
-              <thead>
-                <tr>
-                  <th>名称</th>
-                  <th>密钥</th>
-                  <th>可访问</th>
-                  <th>创建时间</th>
-                  <th>状态</th>
-                  <th>操作</th>
-                </tr>
-              </thead>
-              <tbody>
-                {data.data.map(key => (
-                  <tr key={key.id}>
-                    <td>{key.name}</td>
-                    <td>
-                      <span className="mono">{key.keyPrefix}...</span>
-                      <button
-                        type="button"
-                        className="text-button"
-                        disabled={!key.plaintextStored}
-                        title={key.plaintextStored ? '复制密钥明文' : '旧版密钥未保留明文'}
-                        onClick={() => { void copyKey(key) }}
-                      >
-                        {copiedKey === key.id ? '已复制' : '复制'}
-                      </button>
-                    </td>
-                    <td>{permissionLabel(key.modelPrefixes, key.modelIds)}</td>
-                    <td>{formatDate(key.createdAt)}</td>
-                    <td>{key.revokedAt === undefined ? <span className="badge success">有效</span> : <span className="badge">已吊销</span>}</td>
-                    <td>
-                      <div className="row-actions">
-                        <button className="text-button" onClick={() => setModal({ mode: 'edit', key })}>编辑</button>
-                        <button
-                          type="button"
-                          className="text-button"
-                          disabled={key.revokedAt !== undefined}
-                          onClick={event => {
-                            if (menu?.id === key.id) {
-                              setMenu(undefined)
-                              return
-                            }
-                            const rect = event.currentTarget.getBoundingClientRect()
-                            setMenu({ id: key.id, x: rect.left, y: rect.bottom })
-                          }}
-                        >
-                          配置
-                        </button>
-                        <button className="text-button danger" onClick={() => { void remove(key) }}>删除</button>
-                      </div>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+          <Table
+            rowKey="id"
+            columns={columns}
+            dataSource={data.data}
+            pagination={false}
+            scroll={{ x: 900 }}
+            locale={{ emptyText: <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无密钥" /> }}
+          />
         )}
-      </div>
+      </Card>
       {modal !== undefined && (
         <KeyEditorModal
           providers={providers?.data ?? []}
@@ -1843,24 +1974,6 @@ function KeysView() {
             reloadProviders()
           }}
         />
-      )}
-      {menu !== undefined && menuKey !== undefined && createPortal(
-        <div
-          className="popover-menu fixed"
-          style={{ left: Math.max(8, Math.min(menu.x, window.innerWidth - 188)), top: menu.y + 6 }}
-        >
-          {!menuKey.plaintextStored && (
-            <div className="popover-note">旧版密钥未保留明文，请删除后重新创建</div>
-          )}
-          <button
-            type="button"
-            disabled={busyKey === menuKey.id || !menuKey.plaintextStored}
-            onClick={() => { void fillCcSwitch(menuKey) }}
-          >
-            {busyKey === menuKey.id ? '唤起中...' : '填充到 CC-switch'}
-          </button>
-        </div>,
-        document.body,
       )}
     </section>
   )
@@ -1878,6 +1991,15 @@ function useApiKeyLabel(): (id: string | null | undefined) => string {
     const key = keyMap.get(id)
     return key === undefined ? `已删除密钥 (${id.slice(0, 8)})` : key.name
   }
+}
+
+interface UsageAggregate {
+  key: string | null
+  requests: number
+  success: number
+  requestTokens: number
+  responseTokens: number
+  totalTokens: number
 }
 
 function UsageView() {
@@ -1900,53 +2022,58 @@ function UsageView() {
   const successRate = summary === undefined || summary.requests === 0
     ? '-'
     : `${((summary.success / summary.requests) * 100).toFixed(1)}%`
+  const aggregateColumns = (firstTitle: string, renderFirst: (item: UsageAggregate) => React.ReactNode): TableColumnsType<UsageAggregate> => [
+    { title: firstTitle, render: (_value, item) => renderFirst(item) },
+    { title: '请求', dataIndex: 'requests', render: value => formatNumber(value as number) },
+    {
+      title: '成功率',
+      render: (_value, item) => item.requests === 0 ? '-' : `${((item.success / item.requests) * 100).toFixed(1)}%`,
+    },
+    { title: 'Token', dataIndex: 'totalTokens', render: value => formatToken(value as number) },
+    { title: '输入 Token', dataIndex: 'requestTokens', render: value => formatToken(value as number) },
+    { title: '输出 Token', dataIndex: 'responseTokens', render: value => formatToken(value as number) },
+  ]
 
   return (
     <section>
-      <div className="panel-head">
-        <h2>用量统计</h2>
-        <div className="segmented">
-          {(['today', '7d', '30d', 'all'] as const).map(item => (
-            <button
-              key={item}
-              className={range === item ? 'active' : ''}
-              onClick={() => setRange(item)}
-            >
-              {item === 'today' ? '今天' : item === '7d' ? '7 天' : item === '30d' ? '30 天' : '全部'}
-            </button>
-          ))}
-        </div>
-      </div>
+      <PageActions>
+        <Segmented
+          value={range}
+          onChange={value => setRange(value as typeof range)}
+          options={[
+            { label: '今天', value: 'today' },
+            { label: '7 天', value: '7d' },
+            { label: '30 天', value: '30d' },
+            { label: '全部', value: 'all' },
+          ]}
+        />
+      </PageActions>
       {loading && <Spinner label="加载中" />}
-      {error !== undefined && <div className="alert error">{error}</div>}
+      {error !== undefined && <Alert type="error" showIcon title={error} className="page-alert" />}
       {!loading && data !== undefined && (
         <>
-          <div className="stat-grid">
-            <div className="stat-card">
-              <span className="stat-label">请求</span>
-              <span className="stat-value">{formatNumber(summary?.requests ?? 0)}</span>
-            </div>
-            <div className="stat-card">
-              <span className="stat-label">成功率</span>
-              <span className="stat-value">{successRate}</span>
-            </div>
-            <div className="stat-card">
-              <span className="stat-label">Token</span>
-              <span className="stat-value">{formatToken(summary?.totalTokens ?? 0)}</span>
-            </div>
-            <div className="stat-card">
-              <span className="stat-label">平均耗时</span>
-              <span className="stat-value">
-                {summary === undefined || summary.requests === 0 ? '-' : formatMs(summary.durationMs / summary.requests)}
-              </span>
-            </div>
-          </div>
-          <div className="panel">
-            <div className="panel-head">
-              <h2>按天</h2>
-            </div>
+          <Row gutter={[12, 12]} className="page-section">
+            <Col xs={24} sm={12} xl={6}>
+              <Card><Statistic title="请求" value={formatNumber(summary?.requests ?? 0)} /></Card>
+            </Col>
+            <Col xs={24} sm={12} xl={6}>
+              <Card><Statistic title="成功率" value={successRate} /></Card>
+            </Col>
+            <Col xs={24} sm={12} xl={6}>
+              <Card><Statistic title="Token" value={formatToken(summary?.totalTokens ?? 0)} /></Card>
+            </Col>
+            <Col xs={24} sm={12} xl={6}>
+              <Card>
+                <Statistic
+                  title="平均耗时"
+                  value={summary === undefined || summary.requests === 0 ? '-' : formatMs(summary.durationMs / summary.requests)}
+                />
+              </Card>
+            </Col>
+          </Row>
+          <Card className="page-card" title="按天">
             {data.byDay.length === 0 ? (
-              <div className="empty">暂无数据</div>
+              <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无数据" />
             ) : (
               <UsageBarChart
                 items={data.byDay.map(item => ({
@@ -1959,14 +2086,10 @@ function UsageView() {
                 }))}
               />
             )}
-          </div>
-          <div className="panel">
-            <div className="panel-head">
-              <h2>按小时</h2>
-              <span className="panel-note">最近 24 小时</span>
-            </div>
+          </Card>
+          <Card className="page-card" title="按小时" extra={<Text type="secondary">最近 24 小时</Text>}>
             {data.byHour.length === 0 ? (
-              <div className="empty">暂无数据</div>
+              <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无数据" />
             ) : (
               <UsageBarChart
                 fit
@@ -1981,77 +2104,33 @@ function UsageView() {
                 }))}
               />
             )}
-          </div>
-          <div className="panel">
-            <div className="panel-head">
-              <h2>密钥用量</h2>
-            </div>
+          </Card>
+          <Card className="page-card" title="密钥用量">
             {data.byKey.length === 0 ? (
-              <div className="empty">暂无数据</div>
+              <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无数据" />
             ) : (
-              <div className="table-wrap">
-                <table>
-                  <thead>
-                    <tr>
-                      <th>密钥</th>
-                      <th>请求</th>
-                      <th>成功率</th>
-                      <th>Token</th>
-                      <th>输入 Token</th>
-                      <th>输出 Token</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {data.byKey.map(item => (
-                      <tr key={item.key ?? '-'}>
-                        <td title={item.key ?? undefined}>{keyLabel(item.key)}</td>
-                        <td>{formatNumber(item.requests)}</td>
-                        <td>{item.requests === 0 ? '-' : `${((item.success / item.requests) * 100).toFixed(1)}%`}</td>
-                        <td>{formatToken(item.totalTokens)}</td>
-                        <td>{formatToken(item.requestTokens)}</td>
-                        <td>{formatToken(item.responseTokens)}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
+              <Table
+                rowKey={item => item.key ?? '-'}
+                columns={aggregateColumns('密钥', item => <span title={item.key ?? undefined}>{keyLabel(item.key)}</span>)}
+                dataSource={data.byKey}
+                pagination={false}
+                scroll={{ x: 760 }}
+              />
             )}
-          </div>
-          <div className="panel">
-            <div className="panel-head">
-              <h2>模型用量</h2>
-            </div>
+          </Card>
+          <Card className="page-card" title="模型用量">
             {data.byModel.length === 0 ? (
-              <div className="empty">暂无数据</div>
+              <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无数据" />
             ) : (
-              <div className="table-wrap">
-                <table>
-                  <thead>
-                    <tr>
-                      <th>模型</th>
-                      <th>请求</th>
-                      <th>成功率</th>
-                      <th>Token</th>
-                      <th>输入 Token</th>
-                      <th>输出 Token</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {data.byModel.map(item => (
-                      <tr key={item.key ?? '-'}>
-                        <td><span className="mono">{item.key ?? '-'}</span></td>
-                        <td>{formatNumber(item.requests)}</td>
-                        <td>{item.requests === 0 ? '-' : `${((item.success / item.requests) * 100).toFixed(1)}%`}</td>
-                        <td>{formatToken(item.totalTokens)}</td>
-                        <td>{formatToken(item.requestTokens)}</td>
-                        <td>{formatToken(item.responseTokens)}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
+              <Table
+                rowKey={item => item.key ?? '-'}
+                columns={aggregateColumns('模型', item => <Text code>{item.key ?? '-'}</Text>)}
+                dataSource={data.byModel}
+                pagination={false}
+                scroll={{ x: 760 }}
+              />
             )}
-          </div>
+          </Card>
         </>
       )}
     </section>
@@ -2092,8 +2171,6 @@ function UsageLogsView() {
     return keyMap.get(id) ?? `已删除密钥 (${id.slice(0, 8)})`
   }
   const total = data?.total ?? 0
-  const totalPages = total === 0 ? 0 : Math.max(1, Math.ceil(total / pageSize))
-  const currentPage = Math.min(page, Math.max(1, totalPages))
   const hasFilters = fromDate !== '' || toDate !== '' || apiKeyId !== '' || model !== '' || status !== ''
   const resetFilters = (): void => {
     setDateRange({ from: '', to: '' })
@@ -2103,144 +2180,135 @@ function UsageLogsView() {
     setPage(1)
   }
 
+  const datePickerValue = fromDate !== '' && toDate !== ''
+    ? [dayjs(fromDate), dayjs(toDate)] as [dayjs.Dayjs, dayjs.Dayjs]
+    : undefined
+
+  const columns: TableColumnsType<UsageRow> = [
+    { title: '时间', dataIndex: 'ts', render: value => formatDate(value as number) },
+    {
+      title: '密钥',
+      dataIndex: 'apiKeyId',
+      render: (value: string | undefined) => (
+        <span title={value}>{keyLabel(value)}</span>
+      ),
+    },
+    {
+      title: '模型',
+      dataIndex: 'model',
+      render: value => <Text code>{value ?? '-'}</Text>,
+    },
+    {
+      title: '状态',
+      dataIndex: 'status',
+      render: value => (
+        <Tag color={(value as number) >= 200 && (value as number) < 400 ? 'success' : 'error'}>
+          {value as number}
+        </Tag>
+      ),
+    },
+    { title: 'Token', dataIndex: 'totalTokens', render: value => formatToken(value as number) },
+    { title: '耗时', dataIndex: 'durationMs', render: value => formatMs(value as number) },
+    { title: '流式', dataIndex: 'streamed', render: value => value === 1 ? '是' : '否' },
+  ]
+
   return (
-    <section className="panel">
-      <div className="panel-head">
-        <h2>使用日志</h2>
-        <button
-          className="secondary"
+    <section>
+      <PageActions>
+        <Button
+          icon={<ReloadOutlined />}
           onClick={() => {
             reload()
             keyOptions.reload()
           }}
         >
           刷新
-        </button>
-      </div>
-      <div className="log-filters">
-        <div className="log-filter-field log-filter-date">
-          <span className="log-filter-label">日期</span>
-          <DateRangePicker
-            value={dateRange}
-            onChange={next => {
-              setDateRange(next)
-              setPage(1)
-            }}
-          />
-        </div>
-        <label className="log-filter-field">
-          <span className="log-filter-label">密钥</span>
-          <select
-            value={apiKeyId}
-            onChange={event => {
-              setApiKeyId(event.target.value)
-              setPage(1)
-            }}
-          >
-            <option value="">全部密钥</option>
-            {(keyOptions.data?.apiKeys ?? []).map(key => (
-              <option key={key.id} value={key.id}>
-                {key.name ?? `已删除密钥 (${key.id.slice(0, 8)})`}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label className="log-filter-field">
-          <span className="log-filter-label">模型</span>
-          <select
-            value={model}
-            onChange={event => {
-              setModel(event.target.value)
-              setPage(1)
-            }}
-          >
-            <option value="">全部模型</option>
-            {(keyOptions.data?.models ?? []).map(item => (
-              <option key={item} value={item}>{item}</option>
-            ))}
-          </select>
-        </label>
-        <label className="log-filter-field">
-          <span className="log-filter-label">状态</span>
-          <select
-            value={status}
-            onChange={event => {
-              setStatus(event.target.value as '' | 'success' | 'error')
-              setPage(1)
-            }}
-          >
-            <option value="">全部状态</option>
-            <option value="success">成功</option>
-            <option value="error">失败</option>
-          </select>
-        </label>
-        <div className="log-filter-actions">
-          <button className="secondary" disabled={!hasFilters} onClick={resetFilters}>重置</button>
-        </div>
-      </div>
-      {loading && <Spinner label="加载中" />}
-      {error !== undefined && <div className="alert error">{error}</div>}
-      {!loading && data !== undefined && (
-        <>
-          {data.rows.length === 0 ? (
-            <div className="empty">{hasFilters ? '没有符合条件的记录' : '暂无记录'}</div>
-          ) : (
-            <div className="table-wrap">
-              <table>
-                <thead>
-                  <tr>
-                    <th>时间</th>
-                    <th>密钥</th>
-                    <th>模型</th>
-                    <th>状态</th>
-                    <th>Token</th>
-                    <th>耗时</th>
-                    <th>流式</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {data.rows.map(row => (
-                    <tr key={row.id}>
-                      <td>{formatDate(row.ts)}</td>
-                      <td title={row.apiKeyId}>{keyLabel(row.apiKeyId)}</td>
-                      <td><span className="mono">{row.model ?? '-'}</span></td>
-                      <td>
-                        <span className={row.status >= 200 && row.status < 400 ? 'badge success' : 'badge error'}>
-                          {row.status}
-                        </span>
-                      </td>
-                      <td>{formatToken(row.totalTokens)}</td>
-                      <td>{formatMs(row.durationMs)}</td>
-                      <td>{row.streamed === 1 ? '是' : '否'}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-          <div className="pagination">
-            <button
-              className="secondary"
-              disabled={page <= 1}
-              onClick={() => setPage(value => value - 1)}
-            >
-              上一页
-            </button>
-            <span className="pagination-info">
-              {total > 0
-                ? `第 ${currentPage} / ${totalPages} 页 · 共 ${formatNumber(total)} 条`
-                : '暂无记录'}
-            </span>
-            <button
-              className="secondary"
-              disabled={page >= totalPages}
-              onClick={() => setPage(value => value + 1)}
-            >
-              下一页
-            </button>
-          </div>
-        </>
-      )}
+        </Button>
+      </PageActions>
+      <Card className="page-card">
+        <Form layout="inline" className="log-filters">
+          <Form.Item label="日期">
+            <DatePicker.RangePicker
+              value={datePickerValue}
+              onChange={dates => {
+                const next = dates?.[0] !== null && dates?.[0] !== undefined && dates[1] !== null && dates[1] !== undefined
+                  ? { from: dates[0].format('YYYY-MM-DD'), to: dates[1].format('YYYY-MM-DD') }
+                  : { from: '', to: '' }
+                setDateRange(next)
+                setPage(1)
+              }}
+            />
+          </Form.Item>
+          <Form.Item label="密钥">
+            <Select
+              value={apiKeyId}
+              style={{ width: 180 }}
+              onChange={value => {
+                setApiKeyId(value)
+                setPage(1)
+              }}
+              options={[
+                { value: '', label: '全部密钥' },
+                ...(keyOptions.data?.apiKeys ?? []).map(key => ({
+                  value: key.id,
+                  label: key.name ?? `已删除密钥 (${key.id.slice(0, 8)})`,
+                })),
+              ]}
+            />
+          </Form.Item>
+          <Form.Item label="模型">
+            <Select
+              value={model}
+              style={{ width: 220 }}
+              onChange={value => {
+                setModel(value)
+                setPage(1)
+              }}
+              options={[
+                { value: '', label: '全部模型' },
+                ...(keyOptions.data?.models ?? []).map(item => ({ value: item, label: item })),
+              ]}
+            />
+          </Form.Item>
+          <Form.Item label="状态">
+            <Select
+              value={status}
+              style={{ width: 140 }}
+              onChange={value => {
+                setStatus(value as '' | 'success' | 'error')
+                setPage(1)
+              }}
+              options={[
+                { value: '', label: '全部状态' },
+                { value: 'success', label: '成功' },
+                { value: 'error', label: '失败' },
+              ]}
+            />
+          </Form.Item>
+          <Form.Item>
+            <Button htmlType="button" disabled={!hasFilters} onClick={resetFilters}>重置</Button>
+          </Form.Item>
+        </Form>
+        {error !== undefined && <Alert type="error" showIcon title={error} className="page-alert" />}
+        <Table
+          rowKey="id"
+          columns={columns}
+          dataSource={data?.rows ?? []}
+          loading={loading}
+          scroll={{ x: 860 }}
+          locale={{ emptyText: <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={hasFilters ? '没有符合条件的记录' : '暂无记录'} /> }}
+          pagination={{
+            current: page,
+            pageSize,
+            total,
+            showSizeChanger: false,
+            showTotal: value => `共 ${formatNumber(value)} 条`,
+            onChange: nextPage => {
+              setPage(nextPage)
+            },
+          }}
+        />
+      </Card>
     </section>
   )
 }
@@ -2260,36 +2328,29 @@ function TodayUsageCard() {
     : `${((todaySummary.success / todaySummary.requests) * 100).toFixed(1)}%`
   return (
     <>
-      <section className="usage-today">
-        <div className="panel-head">
-          <h2>今日用量</h2>
-          <span className="panel-note">固定显示当天数据</span>
-        </div>
+      <Card className="page-card" title="今日用量" extra={<Text type="secondary">固定显示当天数据</Text>}>
         {today.loading && <Spinner label="加载中" />}
-        {today.error !== undefined && <div className="alert error">{today.error}</div>}
+        {today.error !== undefined && <Alert type="error" showIcon title={today.error} className="page-alert" />}
         {!today.loading && today.data !== undefined && (
-          <div className="stat-grid">
-            <div className="stat-card">
-              <span className="stat-label">请求</span>
-              <span className="stat-value">{todaySummary === undefined ? '-' : formatNumber(todaySummary.requests)}</span>
-            </div>
-            <div className="stat-card">
-              <span className="stat-label">成功率</span>
-              <span className="stat-value">{todaySuccessRate}</span>
-            </div>
-            <div className="stat-card">
-              <span className="stat-label">Token</span>
-              <span className="stat-value">{todaySummary === undefined ? '-' : formatToken(todaySummary.totalTokens)}</span>
-            </div>
-            <div className="stat-card">
-              <span className="stat-label">平均耗时</span>
-              <span className="stat-value">
-                {todaySummary === undefined || todaySummary.requests === 0 ? '-' : formatMs(todaySummary.durationMs / todaySummary.requests)}
-              </span>
-            </div>
-          </div>
+          <Row gutter={[12, 12]}>
+            <Col xs={24} sm={12} xl={6}>
+              <Statistic title="请求" value={todaySummary === undefined ? '-' : formatNumber(todaySummary.requests)} />
+            </Col>
+            <Col xs={24} sm={12} xl={6}>
+              <Statistic title="成功率" value={todaySuccessRate} />
+            </Col>
+            <Col xs={24} sm={12} xl={6}>
+              <Statistic title="Token" value={todaySummary === undefined ? '-' : formatToken(todaySummary.totalTokens)} />
+            </Col>
+            <Col xs={24} sm={12} xl={6}>
+              <Statistic
+                title="平均耗时"
+                value={todaySummary === undefined || todaySummary.requests === 0 ? '-' : formatMs(todaySummary.durationMs / todaySummary.requests)}
+              />
+            </Col>
+          </Row>
         )}
-      </section>
+      </Card>
       {!today.loading && today.data !== undefined && (
         <ContributionWall days={today.data.activityByDay ?? []} />
       )}
@@ -2311,8 +2372,7 @@ function PasswordSettingsView() {
     if (data !== undefined) setUsername(data.username)
   }, [data])
 
-  const submit = async (event: FormEvent): Promise<void> => {
-    event.preventDefault()
+  const submit = async (): Promise<void> => {
     setFormError(undefined)
     setResult(undefined)
     if (newPassword !== confirm) {
@@ -2340,49 +2400,39 @@ function PasswordSettingsView() {
 
   return (
     <section>
-      <div className="panel">
-        <div className="panel-head">
-          <h2>管理员</h2>
-        </div>
-        <form className="provider-form settings-form" onSubmit={event => { void submit(event) }}>
-          <div className="form-grid single-column">
-            <Field label="用户名">
-              <input value={username} onChange={event => setUsername(event.target.value)} autoComplete="username" />
-            </Field>
-            <Field label="当前密码" hint="修改任何设置前需要验证">
-              <input
-                type="password"
-                value={currentPassword}
-                onChange={event => setCurrentPassword(event.target.value)}
-                autoComplete="current-password"
-              />
-            </Field>
-            <Field label="新密码" hint="留空表示不修改">
-              <input
-                type="password"
-                value={newPassword}
-                onChange={event => setNewPassword(event.target.value)}
-                autoComplete="new-password"
-              />
-            </Field>
-            <Field label="确认新密码">
-              <input
-                type="password"
-                value={confirm}
-                onChange={event => setConfirm(event.target.value)}
-                autoComplete="new-password"
-              />
-            </Field>
-          </div>
-          {formError !== undefined && <div className="alert error">{formError}</div>}
-          {result !== undefined && <div className="alert success">{result}</div>}
-          <div className="form-actions">
-            <button className="primary" disabled={busy || currentPassword === ''}>
-              {busy ? '保存中...' : '保存管理员信息'}
-            </button>
-          </div>
-        </form>
-      </div>
+      <Card className="page-card" title="管理员">
+        <Form layout="vertical" onFinish={() => { void submit() }}>
+          <Field label="用户名">
+            <Input value={username} onChange={event => setUsername(event.target.value)} autoComplete="username" />
+          </Field>
+          <Field label="当前密码" hint="修改任何设置前需要验证">
+            <Input.Password
+              value={currentPassword}
+              onChange={event => setCurrentPassword(event.target.value)}
+              autoComplete="current-password"
+            />
+          </Field>
+          <Field label="新密码" hint="留空表示不修改">
+            <Input.Password
+              value={newPassword}
+              onChange={event => setNewPassword(event.target.value)}
+              autoComplete="new-password"
+            />
+          </Field>
+          <Field label="确认新密码">
+            <Input.Password
+              value={confirm}
+              onChange={event => setConfirm(event.target.value)}
+              autoComplete="new-password"
+            />
+          </Field>
+          {formError !== undefined && <Alert type="error" showIcon title={formError} className="page-alert" />}
+          {result !== undefined && <Alert type="success" showIcon title={result} className="page-alert" />}
+          <Button type="primary" htmlType="submit" loading={busy} disabled={currentPassword === ''}>
+            保存管理员信息
+          </Button>
+        </Form>
+      </Card>
     </section>
   )
 }
@@ -2391,30 +2441,25 @@ function GatewaySettingsView() {
   const { data, error, loading, reload } = useAsync(() => api.settings(), [])
   return (
     <section>
-      <div className="panel">
-        <div className="panel-head">
-          <h2>网关信息</h2>
-          <button className="secondary compact" onClick={reload}>刷新</button>
-        </div>
+      <Card
+        className="page-card"
+        title="网关信息"
+        extra={<Button icon={<ReloadOutlined />} onClick={reload}>刷新</Button>}
+      >
         {loading && <Spinner label="加载中" />}
-        {error !== undefined && <div className="alert error">{error}</div>}
+        {error !== undefined && <Alert type="error" showIcon title={error} className="page-alert" />}
         {!loading && data !== undefined && (
-          <div className="settings-meta">
-            <div className="settings-meta-item">
-              <span>API Base URL</span>
-              <code className="mono">{data.apiBaseUrl}</code>
-            </div>
-            <div className="settings-meta-item">
-              <span>监听地址</span>
-              <code className="mono">{data.host}:{data.port}</code>
-            </div>
-            <div className="settings-meta-item">
-              <span>数据库</span>
-              <code className="mono">{data.databasePath}</code>
-            </div>
-          </div>
+          <Descriptions
+            bordered
+            column={{ xs: 1, sm: 1, md: 2 }}
+            items={[
+              { key: 'base', label: 'API Base URL', children: <Text code>{data.apiBaseUrl}</Text> },
+              { key: 'host', label: '监听地址', children: <Text code>{data.host}:{data.port}</Text> },
+              { key: 'database', label: '数据库', children: <Text code>{data.databasePath}</Text> },
+            ]}
+          />
         )}
-      </div>
+      </Card>
     </section>
   )
 }
@@ -2426,67 +2471,96 @@ function Sidebar({ view, onView, onLogout, theme, onToggleTheme }: {
   theme: Theme
   onToggleTheme: () => void
 }) {
+  const [modal, modalContextHolder] = Modal.useModal()
   const settingsActive = view === 'settings-password' || view === 'settings-gateway'
+  const [openKeys, setOpenKeys] = useState<string[]>(settingsActive ? ['settings'] : [])
+  const [collapsed, setCollapsed] = useState(false)
+  useEffect(() => {
+    if (!settingsActive) return
+    setOpenKeys(current => current.includes('settings') ? current : ['settings'])
+  }, [settingsActive])
+  const selectedKey = view === 'provider-detail' ? 'providers' : view
+  const menuItems: MenuProps['items'] = [
+    { key: 'overview', icon: <DashboardOutlined />, label: '控制台' },
+    { key: 'providers', icon: <ApiOutlined />, label: '渠道模型' },
+    { key: 'keys', icon: <KeyOutlined />, label: 'API Keys' },
+    { key: 'usage', icon: <BarChartOutlined />, label: '用量统计' },
+    { key: 'logs', icon: <FileTextOutlined />, label: '使用日志' },
+    {
+      key: 'settings',
+      icon: <SettingOutlined />,
+      label: '系统设置',
+      children: SETTING_VIEWS.map(item => ({ key: item.id, label: item.label })),
+    },
+  ]
   return (
-    <aside className="sidebar">
+    <Layout.Sider
+      width={220}
+      className="sidebar"
+      breakpoint="lg"
+      collapsedWidth={64}
+      collapsed={collapsed}
+      collapsible
+      trigger={null}
+      onCollapse={setCollapsed}
+    >
       <div className="sidebar-brand">
         <img className="brand-mark" src="/logo.png" alt="Trae Proxy" />
-        <div>
+        <div className="brand-text">
           <div className="brand-name">Trae Proxy</div>
           <div className="brand-sub">统一模型网关</div>
         </div>
       </div>
-      <nav className="nav">
-        {VIEWS.map(item => (
-          <button
-            key={item.id}
-            className={item.id === 'settings-password' && settingsActive ? 'active' : view === item.id ? 'active' : ''}
-            onClick={() => {
-              navigate(item.id)
-              onView(item.id)
-            }}
-          >
-            {item.label}
-          </button>
-        ))}
-      </nav>
+      <Menu
+        mode="inline"
+        selectedKeys={[settingsActive ? view : selectedKey]}
+        items={menuItems}
+        openKeys={openKeys}
+        onOpenChange={keys => setOpenKeys(keys as string[])}
+        onClick={({ key }) => {
+          const next = key as View
+          navigate(next)
+          onView(next)
+        }}
+        className="sidebar-menu"
+      />
       <div className="sidebar-actions">
+        <Tooltip title={collapsed ? '展开导航' : '收起导航'}>
+          <Button
+            type="text"
+            shape="circle"
+            aria-label={collapsed ? '展开导航' : '收起导航'}
+            icon={collapsed ? <MenuUnfoldOutlined /> : <MenuFoldOutlined />}
+            onClick={() => setCollapsed(value => !value)}
+          />
+        </Tooltip>
         <ThemeToggle theme={theme} onToggle={onToggleTheme} />
       </div>
       <div className="sidebar-foot">
         <span className="dot" />
         <span>{window.location.port || '39310'}</span>
-        <button className="link-button" onClick={onLogout}>退出登录</button>
-      </div>
-    </aside>
-  )
-}
-
-/**
- * 三栏布局中的中间二级导航。
- *
- * 需要带二级菜单的页面传入 items 与当前激活项即可复用，
- * 展示在左侧主导航与右侧内容之间。
- */
-function SecondaryNav({ items, activeId, onSelect }: {
-  items: Array<{ id: string; label: string }>
-  activeId: string
-  onSelect: (id: string) => void
-}) {
-  return (
-    <aside className="secondary-nav">
-      <nav>
-        {items.map(item => (
-          <button
-            key={item.id}
-            className={activeId === item.id ? 'active' : ''}
-            onClick={() => onSelect(item.id)}
+        <Tooltip title="退出登录">
+          <Button
+            type="text"
+            size="small"
+            icon={<LogoutOutlined />}
+            onClick={() => {
+              modal.confirm({
+                title: '确认退出登录',
+                content: '退出后需要重新登录管理台。',
+                okText: '退出登录',
+                cancelText: '取消',
+                okButtonProps: { danger: true },
+                onOk: onLogout,
+              })
+            }}
           >
-            {item.label}
-          </button>
-        ))}
-      </nav>
-    </aside>
+            退出登录
+          </Button>
+        </Tooltip>
+      </div>
+      {modalContextHolder}
+    </Layout.Sider>
   )
 }
 
@@ -2528,10 +2602,9 @@ function Shell({ theme, onToggleTheme }: {
     : view === 'settings-gateway' ? '设置'
     : '渠道详情'
   const endpointUrl = `http://127.0.0.1:${window.location.port || '39310'}/v1`
-  const settingsActive = view === 'settings-password' || view === 'settings-gateway'
 
   return (
-    <div className={`shell${settingsActive ? ' has-secondary' : ''}`}>
+    <Layout className="shell">
       <Sidebar
         view={view}
         onView={setView}
@@ -2539,46 +2612,35 @@ function Shell({ theme, onToggleTheme }: {
         onToggleTheme={onToggleTheme}
         onLogout={() => { void logout() }}
       />
-      {settingsActive && (
-        <SecondaryNav
-          items={SETTING_VIEWS}
-          activeId={view}
-          onSelect={id => {
-            const item = SETTING_VIEWS.find(entry => entry.id === id)
-            if (item !== undefined) {
-              navigate(item.id, item.path)
-              setView(item.id)
-            }
-          }}
-        />
-      )}
-      <main className="content">
-        <header className="topbar">
-          <h1>{topbarTitle}</h1>
-          <span className="endpoint mono">{endpointUrl}</span>
-        </header>
-        {view === 'usage' && <TodayUsageCard />}
-        {view === 'overview' && (
-          <Overview
-            providers={providers.data?.data ?? []}
-            dashboard={dashboard.data}
-            onRefresh={() => {
-              providers.reload()
-              dashboard.reload()
-            }}
-          />
-        )}
-        {view === 'providers' && <ChannelsView onOpenDetail={openDetail} />}
-        {view === 'provider-detail' && providerId !== undefined && (
-          <ChannelDetail id={providerId} onBack={backToProviders} onDeleted={backToProviders} />
-        )}
-        {view === 'keys' && <KeysView />}
-        {view === 'usage' && <UsageView />}
-        {view === 'logs' && <UsageLogsView />}
-        {view === 'settings-password' && <PasswordSettingsView />}
-        {view === 'settings-gateway' && <GatewaySettingsView />}
-      </main>
-    </div>
+      <Layout>
+        <Layout.Header className="topbar">
+          <Title level={3} style={{ margin: 0 }}>{topbarTitle}</Title>
+          <Text code>{endpointUrl}</Text>
+        </Layout.Header>
+        <Layout.Content className="content">
+          {view === 'usage' && <TodayUsageCard />}
+          {view === 'overview' && (
+            <Overview
+              providers={providers.data?.data ?? []}
+              dashboard={dashboard.data}
+              onRefresh={() => {
+                providers.reload()
+                dashboard.reload()
+              }}
+            />
+          )}
+          {view === 'providers' && <ChannelsView onOpenDetail={openDetail} />}
+          {view === 'provider-detail' && providerId !== undefined && (
+            <ChannelDetail id={providerId} onBack={backToProviders} onDeleted={backToProviders} />
+          )}
+          {view === 'keys' && <KeysView />}
+          {view === 'usage' && <UsageView />}
+          {view === 'logs' && <UsageLogsView />}
+          {view === 'settings-password' && <PasswordSettingsView />}
+          {view === 'settings-gateway' && <GatewaySettingsView />}
+        </Layout.Content>
+      </Layout>
+    </Layout>
   )
 }
 
@@ -2597,18 +2659,33 @@ export function App() {
         setChecking(false)
       })
   }, [])
-  if (checking) {
-    return <div className="app-loading"><Spinner label="正在连接网关" /></div>
-  }
-  if (!authed) {
-    return <AuthScreen
-      theme={theme}
-      onToggleTheme={toggleTheme}
-      onDone={() => {
-        setAuthed(true)
-        setChecking(false)
+  const content = checking
+    ? <div className="app-loading"><Spinner label="正在连接网关" /></div>
+    : !authed
+      ? (
+        <AuthScreen
+          theme={theme}
+          onToggleTheme={toggleTheme}
+          onDone={() => {
+            setAuthed(true)
+            setChecking(false)
+          }}
+        />
+      )
+      : <Shell theme={theme} onToggleTheme={toggleTheme} />
+
+  return (
+    <ConfigProvider
+      locale={zhCN}
+      theme={{
+        algorithm: theme === 'dark' ? antdTheme.darkAlgorithm : antdTheme.defaultAlgorithm,
+        token: {
+          borderRadius: 8,
+          fontFamily: 'Geist, PingFang SC, Microsoft YaHei, system-ui, sans-serif',
+        },
       }}
-    />
-  }
-  return <Shell theme={theme} onToggleTheme={toggleTheme} />
+    >
+      {content}
+    </ConfigProvider>
+  )
 }
