@@ -20,6 +20,10 @@
   --focus-ring: rgba(23, 23, 23, 0.08);
   --shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
   --shadow-pop: 0 8px 24px rgba(0, 0, 0, 0.12);
+  --chart-line: #171717;
+  --chart-area: rgba(23, 23, 23, 0.08);
+  --chart-grid: #eaeaea;
+  --chart-dot: #ffffff;
   --heat-empty: #f2f3f5;
   --heat-empty-outline: rgba(27, 31, 35, 0.06);
   --heat-1: #9be9a8;
@@ -45,6 +49,10 @@
   --focus-ring: rgba(237, 237, 237, 0.14);
   --shadow: 0 1px 2px rgba(0, 0, 0, 0.5);
   --shadow-pop: 0 8px 24px rgba(0, 0, 0, 0.6);
+  --chart-line: #ededed;
+  --chart-area: rgba(237, 237, 237, 0.1);
+  --chart-grid: #262626;
+  --chart-dot: #0a0a0a;
   --heat-empty: #1f1f1f;
   --heat-empty-outline: rgba(255, 255, 255, 0.05);
   --heat-1: #0e4429;
@@ -121,6 +129,15 @@ body,
   margin: 0 -4px;
   background: transparent !important;
   border-inline-end: 0 !important;
+}
+
+.sidebar-menu .ant-menu-item,
+.sidebar-menu .ant-menu-submenu-title {
+  padding-inline-start: 8px !important;
+}
+
+.sidebar-menu .ant-menu-sub .ant-menu-item {
+  padding-inline-start: 32px !important;
 }
 
 .sidebar-actions {
@@ -232,6 +249,10 @@ body,
 
 .page-form-card {
   overflow: visible;
+}
+
+.settings-form {
+  max-width: 360px;
 }
 
 .spinner {
@@ -555,113 +576,145 @@ body,
   font-weight: 600;
 }
 
-/* 用量柱状图。 */
-.bar-chart {
-  --axis-width: 64px;
+/* 用量趋势图。 */
+.chart-caption {
+  color: var(--text-tertiary);
+  font-size: 12px;
+}
+
+.chart-card .ant-card-body {
+  padding-top: 12px;
+}
+
+.trend-scroll {
+  padding: 12px 0 4px;
+  overflow: visible;
+}
+
+.trend-chart {
+  --axis-width: 56px;
+  display: grid;
+  grid-template-columns: var(--axis-width) minmax(0, 1fr);
+  gap: 12px;
+  min-height: 276px;
+}
+
+.trend-y-axis {
   display: flex;
-  align-items: flex-end;
-  gap: 8px;
-  min-height: 250px;
-  padding: 24px 20px 8px;
-  overflow-x: auto;
-}
-
-.bar-chart.fit {
-  width: 100%;
-}
-
-.bar-chart.fit .bar-col {
-  flex: 1;
-  min-width: 12px;
-}
-
-.bar-axis {
-  position: sticky;
-  left: 0;
-  z-index: 2;
-  display: flex;
-  width: var(--axis-width);
-  min-width: var(--axis-width);
-  height: 220px;
-  padding: 0 8px 28px 0;
-  background: var(--bg);
-}
-
-.bar-axis-ticks {
-  display: flex;
-  flex: 1;
   flex-direction: column;
   justify-content: space-between;
+  height: 220px;
   color: var(--text-tertiary);
   font-size: 11px;
+  line-height: 1;
   text-align: right;
 }
 
-.bar-axis-ticks.single {
-  justify-content: flex-end;
+.trend-main {
+  min-width: 0;
 }
 
-.bar-col {
+.trend-plot {
   position: relative;
-  display: flex;
-  flex: 0 0 34px;
-  flex-direction: column;
-  align-items: center;
-  min-width: 34px;
-  height: 228px;
+  height: 220px;
+  margin: 0 18px;
 }
 
-.bar-tooltip {
+.trend-plot svg {
   position: absolute;
-  bottom: calc(100% - 4px);
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
+
+.trend-grid-line {
+  stroke: var(--chart-grid);
+  stroke-width: 1;
+  vector-effect: non-scaling-stroke;
+}
+
+.trend-area {
+  fill: var(--chart-area);
+}
+
+.trend-line {
+  fill: none;
+  stroke: var(--chart-line);
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.trend-hit {
+  position: absolute;
+  bottom: 0;
+  z-index: 2;
+  height: 100%;
+  transform: translateX(-50%);
+}
+
+.trend-hit:hover {
+  z-index: 10;
+}
+
+.trend-marker {
+  position: absolute;
   left: 50%;
-  z-index: 20;
+  width: 7px;
+  height: 7px;
+  border: 2px solid var(--chart-line);
+  border-radius: 50%;
+  background: var(--chart-dot);
+  box-shadow: 0 0 0 2px var(--bg);
+  opacity: 0.72;
+  transform: translate(-50%, -50%);
+  transition: opacity 0.12s ease, transform 0.12s ease;
+}
+
+.trend-hit:hover .trend-marker {
+  opacity: 1;
+  transform: translate(-50%, -50%) scale(1.28);
+}
+
+.trend-chart.dense .trend-marker {
+  opacity: 0;
+  transform: translate(-50%, -50%) scale(0.72);
+}
+
+.trend-chart.dense .trend-hit:hover .trend-marker {
+  opacity: 1;
+  transform: translate(-50%, -50%) scale(1.18);
+}
+
+.trend-tooltip {
+  position: fixed;
+  z-index: 1100;
   display: grid;
   gap: 5px;
   width: max-content;
-  min-width: 160px;
+  min-width: 176px;
   padding: 9px 11px;
   border: 1px solid var(--border-strong);
-  border-radius: 6px;
+  border-radius: 8px;
   background: var(--bg-raised);
   box-shadow: var(--shadow-pop);
-  opacity: 0;
-  visibility: hidden;
-  transform: translate(-50%, 4px);
-  transition: opacity 0.12s ease, transform 0.12s ease, visibility 0.12s;
+  transform: translate(-50%, calc(-100% - 12px));
   pointer-events: none;
 }
 
-.bar-col:hover .bar-tooltip {
-  opacity: 1;
-  visibility: visible;
-  transform: translate(-50%, 0);
+.trend-tooltip.below {
+  transform: translate(-50%, 12px);
 }
 
-.bar-col:first-child .bar-tooltip {
-  left: 0;
-  transform: translate(0, 4px);
-}
-
-.bar-col:last-child .bar-tooltip {
-  right: 0;
-  left: auto;
-  transform: translate(0, 4px);
-}
-
-.bar-col:first-child:hover .bar-tooltip,
-.bar-col:last-child:hover .bar-tooltip {
-  transform: translate(0, 0);
-}
-
-.bar-tooltip-title {
+.trend-tooltip-title {
   color: var(--text);
   font-size: 12px;
   font-weight: 600;
   white-space: nowrap;
 }
 
-.bar-tooltip-row {
+.trend-tooltip-row {
   display: flex;
   justify-content: space-between;
   gap: 18px;
@@ -669,35 +722,29 @@ body,
   font-size: 12px;
 }
 
-.bar-tooltip-row strong {
+.trend-tooltip-row strong {
   color: var(--text);
   font-weight: 500;
 }
 
-.bar-track {
+.trend-x-axis {
   position: relative;
-  width: 100%;
-  height: 196px;
-  border-radius: 4px 4px 0 0;
-  background: var(--bg-subtle);
-  overflow: hidden;
+  height: 34px;
+  margin: 0 18px;
 }
 
-.bar-fill {
+.trend-x-axis span {
   position: absolute;
-  right: 0;
-  bottom: 0;
-  left: 0;
-  border-radius: 4px 4px 0 0;
-  background: var(--accent);
-}
-
-.bar-label {
-  height: 28px;
-  padding-top: 6px;
+  top: 9px;
   color: var(--text-tertiary);
   font-size: 11px;
+  line-height: 1;
   white-space: nowrap;
+  transform: translateX(-50%);
+}
+
+.trend-chart.dense .trend-x-axis span {
+  font-size: 10px;
 }
 
 @media (max-width: 960px) {
