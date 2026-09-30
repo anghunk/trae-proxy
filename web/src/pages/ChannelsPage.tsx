@@ -69,6 +69,10 @@ export function ChannelsPage({ onOpenDetail }: { onOpenDetail: (id: string) => v
         <ProviderToggle
           enabled={enabled}
           disabled={toggling[provider.id] === true}
+          confirm
+          confirmDescription={enabled
+            ? `停用后「${provider.name}」将不再参与模型转发。`
+            : `启用后「${provider.name}」将重新参与模型转发。`}
           onChange={next => { void setEnabled(provider, next) }}
         />
       ),
