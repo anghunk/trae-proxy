@@ -8,6 +8,7 @@ import {
   Empty,
   Row,
   Segmented,
+  Spin,
   Statistic,
   Table,
   Typography,
@@ -137,10 +138,10 @@ export function UsagePage() {
             ]}
           />
         </PageActions>
-        {loading && <Spinner label="加载中" />}
+        {loading && data === undefined && <Spinner label="加载中" />}
         {error !== undefined && <Alert type="error" showIcon title={error} className="page-alert" />}
-        {!loading && data !== undefined && (
-          <>
+        {data !== undefined && (
+          <Spin spinning={loading} tip="更新中">
             <Row gutter={[12, 12]} className="page-section">
               <Col xs={24} sm={12} xl={6}>
                 <Card><Statistic title="请求" value={formatNumber(summary?.requests ?? 0)} /></Card>
@@ -219,7 +220,7 @@ export function UsagePage() {
                 />
               )}
             </Card>
-          </>
+          </Spin>
         )}
       </section>
     </>
