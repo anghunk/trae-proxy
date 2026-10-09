@@ -19,6 +19,19 @@ interface ContributionDay {
   totalTokens: number
 }
 
+interface ContributionCell extends ContributionDay {
+  date: Date
+  future: boolean
+  level: number
+}
+
+interface HoveredContribution {
+  cell: ContributionCell
+  x: number
+  y: number
+  below: boolean
+}
+
 /** 返回本地时区日期字符串，避免 UTC 转换导致热力图日期偏移。 */
 function localDayKey(date: Date): string {
   const month = String(date.getMonth() + 1).padStart(2, '0')
@@ -52,6 +65,33 @@ function addLocalDays(value: Date, days: number): Date {
 function quantile(sorted: number[], ratio: number): number {
   if (sorted.length === 0) return 0
   return sorted[Math.floor((sorted.length - 1) * ratio)] ?? 0
+}
+
+/**
+ * 图表悬停提示。
+ *
+ * 采用固定定位渲染在图表之外，避免提示内容撑开滚动容器产生横向滚动条；
+ * x 为水平中心点，y 为锚点纵坐标，below 为 true 时向下展开。
+ */
+function ChartTooltip({ x, y, below, title, rows }: {
+  x: number
+  y: number
+  below: boolean
+  title: string
+  rows: Array<[string, string]>
+}) {
+  return (
+    <div
+      className={`chart-tooltip${below ? ' below' : ''}`}
+      role="tooltip"
+      style={{ left: `${x}px`, top: `${y}px` }}
+    >
+      <span className="chart-tooltip-title">{title}</span>
+      {rows.map(([label, value]) => (
+        <span className="chart-tooltip-row" key={label}><span>{label}</span><strong>{value}</strong></span>
+      ))}
+    </div>
+  )
 }
 
 /**
@@ -127,6 +167,21 @@ export function ContributionWall({ days }: { days: ContributionDay[] }) {
     }
   }, [days])
 
+  const [hovered, setHovered] = useState<HoveredContribution | undefined>(undefined)
+
+  /** 悬停热力格子时定位提示，并贴边限制在视口内。 */
+  const showTooltip = (event: ReactMouseEvent<HTMLSpanElement>, cell: ContributionCell): void => {
+    if (cell.future) return
+    const rect = event.currentTarget.getBoundingClientRect()
+    const margin = 112
+    setHovered({
+      cell,
+      x: Math.min(Math.max(rect.left + rect.width / 2, margin), Math.max(window.innerWidth - margin, margin)),
+      y: rect.top,
+      below: rect.top < 140,
+    })
+  }
+
   return (
     <Card className="page-card contribution-panel" title="请求活跃度">
       <div className="contribution-scroll">
@@ -144,38 +199,22 @@ export function ContributionWall({ days }: { days: ContributionDay[] }) {
               <span key={`${index}-${label}`}>{label}</span>
             ))}
           </div>
-          <div className="contribution-grid">
-            {calendar.cells.map((cell, index) => {
-              const column = Math.floor(index / 7)
-              const row = index % 7
-              return (
-                <span
-                  key={cell.day}
-                  className={[
-                    'contribution-cell',
-                    `level-${cell.level}`,
-                    cell.requests <= 0 ? 'no-data' : '',
-                    cell.future ? 'future' : '',
-                    row < 2 ? 'tooltip-below' : '',
-                    column < 4 ? 'tooltip-align-left' : '',
-                    column > CONTRIBUTION_WEEKS - 5 ? 'tooltip-align-right' : '',
-                  ].filter(Boolean).join(' ')}
-                  aria-label={cell.future
-                    ? undefined
-                    : `${cell.day}：请求数 ${formatNumber(cell.requests)}，Token ${formatToken(cell.totalTokens)}`}
-                >
-                  {!cell.future && (
-                    <span className="contribution-tooltip" role="tooltip">
-                      <span className="contribution-tooltip-title">
-                        {CONTRIBUTION_DAY_FORMAT.format(cell.date)}
-                      </span>
-                      <span className="contribution-tooltip-row"><span>请求数</span><strong>{formatNumber(cell.requests)}</strong></span>
-                      <span className="contribution-tooltip-row"><span>Token</span><strong>{formatToken(cell.totalTokens)}</strong></span>
-                    </span>
-                  )}
-                </span>
-              )
-            })}
+          <div className="contribution-grid" onMouseLeave={() => setHovered(undefined)}>
+            {calendar.cells.map(cell => (
+              <span
+                key={cell.day}
+                className={[
+                  'contribution-cell',
+                  `level-${cell.level}`,
+                  cell.requests <= 0 ? 'no-data' : '',
+                  cell.future ? 'future' : '',
+                ].filter(Boolean).join(' ')}
+                onMouseEnter={event => showTooltip(event, cell)}
+                aria-label={cell.future
+                  ? undefined
+                  : `${cell.day}：请求数 ${formatNumber(cell.requests)}，Token ${formatToken(cell.totalTokens)}`}
+              />
+            ))}
           </div>
         </div>
       </div>
@@ -186,6 +225,18 @@ export function ContributionWall({ days }: { days: ContributionDay[] }) {
           <span><strong>{calendar.activeDays}</strong> 个活跃日</span>
         </div>
       </div>
+      {hovered !== undefined && (
+        <ChartTooltip
+          x={hovered.x}
+          y={hovered.y}
+          below={hovered.below}
+          title={CONTRIBUTION_DAY_FORMAT.format(hovered.cell.date)}
+          rows={[
+            ['请求数', formatNumber(hovered.cell.requests)],
+            ['Token', formatToken(hovered.cell.totalTokens)],
+          ]}
+        />
+      )}
     </Card>
   )
 }
@@ -350,23 +401,19 @@ export function UsageTrendChart({ items, groupSize = 1 }: {
           </div>
         </div>
       </div>
-      {hovered !== undefined && (() => {
-        const successRate = hovered.item.requests === 0
-          ? '-'
-          : `${((hovered.item.success / hovered.item.requests) * 100).toFixed(1)}%`
-        return (
-          <div
-            className={`trend-tooltip${hovered.below ? ' below' : ''}`}
-            role="tooltip"
-            style={{ left: `${hovered.x}px`, top: `${hovered.y}px` }}
-          >
-            <span className="trend-tooltip-title">{hovered.item.detail}</span>
-            <span className="trend-tooltip-row"><span>请求</span><strong>{formatNumber(hovered.item.requests)}</strong></span>
-            <span className="trend-tooltip-row"><span>成功率</span><strong>{successRate}</strong></span>
-            <span className="trend-tooltip-row"><span>Token</span><strong>{formatToken(hovered.item.totalTokens)}</strong></span>
-          </div>
-        )
-      })()}
+      {hovered !== undefined && (
+        <ChartTooltip
+          x={hovered.x}
+          y={hovered.y}
+          below={hovered.below}
+          title={hovered.item.detail}
+          rows={[
+            ['请求', formatNumber(hovered.item.requests)],
+            ['成功率', hovered.item.requests === 0 ? '-' : `${((hovered.item.success / hovered.item.requests) * 100).toFixed(1)}%`],
+            ['Token', formatToken(hovered.item.totalTokens)],
+          ]}
+        />
+      )}
     </>
   )
 }
