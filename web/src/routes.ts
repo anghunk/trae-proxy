@@ -21,9 +21,9 @@ export function viewFromPath(): View {
   if (/^\/providers\/[^/]+\/?$/.test(window.location.pathname)) return 'provider-detail'
   const settingsMatch = /^\/settings\/(password|gateway)\/?$/.exec(window.location.pathname)
   if (settingsMatch !== null) return `settings-${settingsMatch[1]}` as View
-  const match = /^\/(overview|providers|keys|usage|logs|channel-status)\/?$/.exec(window.location.pathname)
+  const match = /^\/(overview|providers|keys|usage|logs|status)\/?$/.exec(window.location.pathname)
   if (match === null) return 'overview'
-  return match[1] === 'channel-status' ? 'status' : match[1] as View
+  return match[1] as View
 }
 
 /** 写入浏览器历史地址，由调用方同步更新当前视图。 */
@@ -32,7 +32,7 @@ export function navigate(view: View, id?: string): void {
     ? `/providers/${encodeURIComponent(id)}`
     : view === 'settings-password' ? '/settings/password'
     : view === 'settings-gateway' ? '/settings/gateway'
-    : view === 'status' ? '/channel-status'
+    : view === 'status' ? '/status'
     : `/${view}`
   window.history.pushState(null, '', path)
 }
