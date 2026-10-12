@@ -103,6 +103,73 @@ export interface CcSwitchFillResult {
   models?: string[]
 }
 
+/** 单个渠道在某一小时内的健康度分档。 */
+export type ChannelStatusLevel = 'operational' | 'degraded' | 'outage' | 'idle'
+
+/** 单次主动探活的结果分档。 */
+export type ProbeLevel = 'up' | 'degraded' | 'down' | 'skipped'
+
+export interface ChannelProbeSummary {
+  ts: number
+  level: ProbeLevel
+  status: number
+  durationMs: number
+  model?: string
+  error?: string
+}
+
+export interface ChannelStatusHour {
+  hour: string
+  status: ChannelStatusLevel
+  /** 该小时内参与判定的探活次数（不含「跳过」）。 */
+  samples: number
+  up: number
+  degraded: number
+  down: number
+  skipped: number
+}
+
+export interface ChannelStatus {
+  id: string
+  name: string
+  type: Provider['type']
+  enabled: boolean
+  /** 区间内参与判定的探活次数。 */
+  samples: number
+  /** 区间可用性百分比；区间内没有任何探活时为 null。 */
+  availability: number | null
+  lastProbe: ChannelProbeSummary | null
+  hours: ChannelStatusHour[]
+}
+
+export interface ChannelProbeSchedule {
+  /** 探活间隔（毫秒）；0 表示未启用定时探活。 */
+  intervalMs: number
+  lastProbeAt: number | null
+  nextProbeAt: number | null
+}
+
+export interface ChannelStatusResponse {
+  from: number
+  to: number
+  hours: number
+  generatedAt: number
+  probe: ChannelProbeSchedule
+  data: ChannelStatus[]
+}
+
+export interface ChannelProbeRunResult {
+  ok: boolean
+  results: Array<{
+    providerId: string
+    level: ProbeLevel
+    status: number
+    durationMs: number
+    model?: string
+    error?: string
+  }>
+}
+
 export interface Dashboard {
   providers: { total: number; enabled: number }
   models: number
@@ -150,6 +217,9 @@ export const api = {
     request<{ ok: boolean }>('/api/change-password', { method: 'POST', body: JSON.stringify({ currentPassword, newPassword }) }),
   settings: () => request<GatewaySettings>('/api/settings'),
   dashboard: () => request<Dashboard>('/api/dashboard'),
+  status: (hours: number) =>
+    request<ChannelStatusResponse>(`/api/status?hours=${encodeURIComponent(String(hours))}`),
+  probeStatus: () => request<ChannelProbeRunResult>('/api/status/probe', { method: 'POST' }),
   updateAdmin: (username: string, currentPassword: string, newPassword: string) =>
     request<{ ok: boolean; username: string }>('/api/settings/admin', {
       method: 'POST',

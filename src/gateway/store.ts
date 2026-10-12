@@ -90,6 +90,21 @@ export interface UsageSummary {
   durationMs: number
 }
 
+/** 单次主动探活的结果分档。 */
+export type ProbeLevel = 'up' | 'degraded' | 'down' | 'skipped'
+
+export interface ProviderProbeRecord {
+  id: number
+  ts: number
+  providerId: string
+  model?: string
+  ok: number
+  status: number
+  level: ProbeLevel
+  durationMs: number
+  error?: string
+}
+
 const USAGE_FLUSH_MS = 250
 const USAGE_BATCH_MAX = 200
 
@@ -182,6 +197,21 @@ export class GatewayStore {
       CREATE INDEX IF NOT EXISTS idx_usage_provider ON usage_events(provider_id);
       CREATE INDEX IF NOT EXISTS idx_usage_model ON usage_events(model);
       CREATE INDEX IF NOT EXISTS idx_usage_recent ON usage_events(ts DESC, id DESC);
+
+      CREATE TABLE IF NOT EXISTS provider_probes (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        ts INTEGER NOT NULL,
+        provider_id TEXT NOT NULL,
+        model TEXT,
+        ok INTEGER NOT NULL DEFAULT 0,
+        status INTEGER NOT NULL DEFAULT 0,
+        level TEXT NOT NULL,
+        duration_ms INTEGER NOT NULL DEFAULT 0,
+        error TEXT
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_probes_ts ON provider_probes(ts);
+      CREATE INDEX IF NOT EXISTS idx_probes_provider_ts ON provider_probes(provider_id, ts);
     `)
     const apiKeyColumns = this.db.prepare('PRAGMA table_info(api_keys)').all() as Array<{ name: string }>
     if (!apiKeyColumns.some(column => column.name === 'app')) {
@@ -936,6 +966,111 @@ export class GatewayStore {
       cursor.setHours(cursor.getHours() + 1)
     }
     return result
+  }
+
+  /** 记录一次主动探活结果。探活独立于 usage_events，不计入用量统计。 */
+  insertProbe(record: Omit<ProviderProbeRecord, 'id'>): void {
+    this.db
+      .prepare(
+        `INSERT INTO provider_probes (ts, provider_id, model, ok, status, level, duration_ms, error)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        record.ts,
+        record.providerId,
+        record.model ?? null,
+        record.ok,
+        record.status,
+        record.level,
+        record.durationMs,
+        record.error ?? null,
+      )
+  }
+
+  /** 某个渠道最近一次探活记录，用于状态页展示最后一次错误原因。 */
+  latestProbe(providerId: string): ProviderProbeRecord | undefined {
+    const row = this.db
+      .prepare(
+        `SELECT id, ts, provider_id, model, ok, status, level, duration_ms, error
+         FROM provider_probes WHERE provider_id = ? ORDER BY ts DESC, id DESC LIMIT 1`,
+      )
+      .get(providerId) as {
+      id: number
+      ts: number
+      provider_id: string
+      model: string | null
+      ok: number
+      status: number
+      level: ProbeLevel
+      duration_ms: number
+      error: string | null
+    } | undefined
+    if (row === undefined) return undefined
+    return {
+      id: row.id,
+      ts: row.ts,
+      providerId: row.provider_id,
+      ...(row.model === null ? {} : { model: row.model }),
+      ok: row.ok,
+      status: row.status,
+      level: row.level,
+      durationMs: row.duration_ms,
+      ...(row.error === null ? {} : { error: row.error }),
+    }
+  }
+
+  /**
+   * 按渠道 + 小时汇总探活结果，用于渠道状态页。
+   *
+   * @param options 时间区间，`from` 含、`to` 不含。
+   */
+  providerHourlyProbes(options: { from: number; to: number }): Array<{
+    providerId: string
+    hour: string
+    up: number
+    degraded: number
+    down: number
+    skipped: number
+    durationMs: number
+  }> {
+    const rows = this.db
+      .prepare(
+        `SELECT provider_id,
+                strftime('%Y-%m-%d %H:00', ts / 1000, 'unixepoch', 'localtime') AS hour,
+                SUM(CASE WHEN level = 'up' THEN 1 ELSE 0 END) AS up,
+                SUM(CASE WHEN level = 'degraded' THEN 1 ELSE 0 END) AS degraded,
+                SUM(CASE WHEN level = 'down' THEN 1 ELSE 0 END) AS down,
+                SUM(CASE WHEN level = 'skipped' THEN 1 ELSE 0 END) AS skipped,
+                COALESCE(SUM(duration_ms), 0) AS duration_ms
+         FROM provider_probes
+         WHERE ts >= ? AND ts < ?
+         GROUP BY provider_id, hour
+         ORDER BY provider_id, hour`,
+      )
+      .all(options.from, options.to) as {
+      provider_id: string
+      hour: string
+      up: number | null
+      degraded: number | null
+      down: number | null
+      skipped: number | null
+      duration_ms: number
+    }[]
+    return rows.map(row => ({
+      providerId: row.provider_id,
+      hour: row.hour,
+      up: row.up ?? 0,
+      degraded: row.degraded ?? 0,
+      down: row.down ?? 0,
+      skipped: row.skipped ?? 0,
+      durationMs: row.duration_ms,
+    }))
+  }
+
+  /** 清理指定时间之前的探活记录，返回删除行数。 */
+  pruneProbes(before: number): number {
+    const result = this.db.prepare('DELETE FROM provider_probes WHERE ts < ?').run(before)
+    return Number(result.changes)
   }
 
   /** 清理指定时间之前的用量事件，返回删除行数。 */

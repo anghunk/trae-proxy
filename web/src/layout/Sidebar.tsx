@@ -9,6 +9,7 @@ import {
   DashboardOutlined,
   FileTextOutlined,
   KeyOutlined,
+  LineChartOutlined,
   LogoutOutlined,
   MenuFoldOutlined,
   MenuUnfoldOutlined,
@@ -37,6 +38,7 @@ export function Sidebar({ view, onView, onLogout, theme, onToggleTheme }: {
   const menuItems: MenuProps['items'] = [
     { key: 'overview', icon: <DashboardOutlined />, label: '控制台' },
     { key: 'providers', icon: <ApiOutlined />, label: '渠道模型' },
+    { key: 'status', icon: <LineChartOutlined />, label: '渠道状态' },
     { key: 'keys', icon: <KeyOutlined />, label: 'API Keys' },
     { key: 'usage', icon: <BarChartOutlined />, label: '用量统计' },
     { key: 'logs', icon: <FileTextOutlined />, label: '使用日志' },

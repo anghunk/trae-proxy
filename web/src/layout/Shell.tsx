@@ -10,6 +10,7 @@ import { GatewaySettingsPage } from '../pages/GatewaySettingsPage.tsx'
 import { KeysPage } from '../pages/KeysPage.tsx'
 import { OverviewPage } from '../pages/OverviewPage.tsx'
 import { PasswordSettingsPage } from '../pages/PasswordSettingsPage.tsx'
+import { StatusPage } from '../pages/StatusPage.tsx'
 import { UsageLogsPage } from '../pages/UsageLogsPage.tsx'
 import { UsagePage } from '../pages/UsagePage.tsx'
 import { navigate, viewFromPath, type View } from '../routes.ts'
@@ -49,6 +50,7 @@ export function Shell({ theme, onToggleTheme }: {
 
   const topbarTitle = view === 'overview' ? '概览'
     : view === 'providers' ? '渠道'
+    : view === 'status' ? '渠道状态'
     : view === 'keys' ? 'API Keys'
     : view === 'usage' ? '用量'
     : view === 'logs' ? '使用日志'
@@ -83,6 +85,7 @@ export function Shell({ theme, onToggleTheme }: {
             />
           )}
           {view === 'providers' && <ChannelsPage onOpenDetail={openDetail} />}
+          {view === 'status' && <StatusPage />}
           {view === 'provider-detail' && providerId !== undefined && (
             <ChannelDetailPage id={providerId} onBack={backToProviders} onDeleted={backToProviders} />
           )}

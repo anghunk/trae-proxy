@@ -30,6 +30,9 @@
   --heat-2: #40c463;
   --heat-3: #30a14e;
   --heat-4: #216e39;
+  --status-operational: #2da44e;
+  --status-degraded: #d29922;
+  --status-outage: #cf222e;
   color-scheme: light;
   font-family: 'Geist', 'PingFang SC', 'Microsoft YaHei', system-ui, sans-serif;
 }
@@ -59,6 +62,9 @@
   --heat-2: #006d32;
   --heat-3: #26a641;
   --heat-4: #39d353;
+  --status-operational: #3fb950;
+  --status-degraded: #d29922;
+  --status-outage: #f85149;
   color-scheme: dark;
 }
 
@@ -640,6 +646,15 @@ body,
   font-weight: 500;
 }
 
+.chart-tooltip-error {
+  max-width: 280px;
+  color: var(--text-secondary);
+  font-size: 11px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+
 .trend-x-axis {
   position: relative;
   height: 34px;
@@ -660,6 +675,133 @@ body,
   font-size: 10px;
 }
 
+/* 渠道状态时间轴。 */
+.status-card-sub {
+  font-size: 12px;
+  font-weight: 400;
+}
+
+.status-toolbar {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: 12px;
+}
+
+.status-legend {
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.status-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.status-swatch {
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  flex: none;
+}
+
+.status-swatch.operational {
+  background: var(--status-operational);
+}
+
+.status-swatch.degraded {
+  background: var(--status-degraded);
+}
+
+.status-swatch.outage {
+  background: var(--status-outage);
+}
+
+.status-swatch.idle {
+  background: var(--heat-empty);
+  outline: 1px solid var(--heat-empty-outline);
+  outline-offset: -1px;
+}
+
+.status-scroll {
+  overflow-x: auto;
+  padding-bottom: 2px;
+}
+
+.status-track {
+  min-width: 100%;
+}
+
+.status-row {
+  padding: 12px 0 10px;
+  border-top: 1px solid var(--border);
+}
+
+.status-row:first-child {
+  padding-top: 0;
+  border-top: 0;
+}
+
+.status-row.disabled {
+  opacity: 0.62;
+}
+
+.status-row-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+
+.status-provider-type {
+  font-size: 12px;
+}
+
+.status-bars {
+  display: grid;
+  grid-auto-rows: 30px;
+  gap: 1px;
+}
+
+.status-bar {
+  min-width: 1px;
+  border-radius: 2px;
+  background: var(--heat-empty);
+  outline: 1px solid var(--heat-empty-outline);
+  outline-offset: -1px;
+  transition: opacity 0.12s ease;
+}
+
+.status-bar.operational {
+  background: var(--status-operational);
+  outline-color: transparent;
+}
+
+.status-bar.degraded {
+  background: var(--status-degraded);
+  outline-color: transparent;
+}
+
+.status-bar.outage {
+  background: var(--status-outage);
+  outline-color: transparent;
+}
+
+.status-bar:hover {
+  opacity: 0.8;
+}
+
+.status-axis {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding-top: 10px;
+  color: var(--text-tertiary);
+  font-size: 12px;
+}
+
 @media (max-width: 960px) {
   .topbar {
     padding: 0 20px;
@@ -671,6 +813,15 @@ body,
 }
 
 @media (max-width: 640px) {
+  .status-toolbar {
+    justify-content: flex-start;
+  }
+
+  .status-row-head {
+    align-items: flex-start;
+    gap: 4px 12px;
+  }
+
   .topbar {
     height: auto;
     min-height: 64px;

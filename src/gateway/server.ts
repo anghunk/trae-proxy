@@ -27,6 +27,7 @@ import {
   verifyPassword,
 } from './auth.ts'
 import { isValidProviderId, upsertProviderInstance } from './factory.ts'
+import { ProviderProbeRunner, type ProbeOutcome } from './probe.ts'
 import { ProviderRegistry, refreshProviderModels, type GatewayModel } from './providers.ts'
 import { DEFAULT_DB_PATH, type ProviderRecord, type ProviderType } from './store.ts'
 import { SseDecoder } from '../sse.ts'
@@ -61,6 +62,10 @@ export interface GatewayServerOptions {
   port: number
   host?: string
   webDist?: string
+  /** 主动探活间隔（毫秒）；传 0 或负数表示不启动定时探活。 */
+  probeIntervalMs?: number
+  /** 单次探活超时（毫秒）。 */
+  probeTimeoutMs?: number
   logger?: GatewayLogger
 }
 
@@ -70,6 +75,12 @@ export interface GatewayServer {
   close(): Promise<void>
   reloadProviders(): Promise<{ total: number; enabled: number }>
   refreshAllModels(): Promise<Array<{ providerId: string; count: number; error?: string }>>
+  /** 启动定时主动探活；probeIntervalMs ≤ 0 时不生效。 */
+  startProbes(delayMs?: number): void
+  /** 立即执行一轮主动探活。 */
+  probeNow(): Promise<ProbeOutcome[]>
+  /** 当前探活调度信息，供状态页展示。 */
+  probeSchedule(): { intervalMs: number; lastProbeAt: number | null; nextProbeAt: number | null }
   registry(): ProviderRegistry
 }
 
@@ -492,6 +503,14 @@ export function createGatewayServer(options: GatewayServerOptions): GatewayServe
     error: () => {},
   }
   const registry = new ProviderRegistry({ logger: (message, detail) => logger.warn(message, detail) })
+  const probeIntervalMs = options.probeIntervalMs ?? 15 * 60 * 1000
+  const probes = new ProviderProbeRunner({
+    store,
+    registry,
+    intervalMs: probeIntervalMs > 0 ? probeIntervalMs : 15 * 60 * 1000,
+    ...(options.probeTimeoutMs === undefined ? {} : { timeoutMs: options.probeTimeoutMs }),
+    logger,
+  })
   const records = new Map<string, ProviderRecord>()
   const sockets = new Set<Socket>()
   const loginFailures = new Map<string, { count: number; lockedUntil: number }>()
@@ -1602,6 +1621,108 @@ export function createGatewayServer(options: GatewayServerOptions): GatewayServe
     )
   }
 
+  type ChannelStatusLevel = 'operational' | 'degraded' | 'outage' | 'idle'
+
+  /** 同一小时内取最差探活结果：有故障即故障，有波动即波动，否则正常。 */
+  function channelHourStatus(up: number, degraded: number, down: number): ChannelStatusLevel {
+    if (up + degraded + down <= 0) return 'idle'
+    if (down > 0) return 'outage'
+    if (degraded > 0) return 'degraded'
+    return 'operational'
+  }
+
+  /** 本地小时键，格式与 store 的 strftime 输出保持一致。 */
+  function localHourKey(date: Date): string {
+    const month = String(date.getMonth() + 1).padStart(2, '0')
+    const day = String(date.getDate()).padStart(2, '0')
+    const hour = String(date.getHours()).padStart(2, '0')
+    return `${date.getFullYear()}-${month}-${day} ${hour}:00`
+  }
+
+  /**
+   * 汇总每个渠道最近若干个小时的主动探活状态。
+   *
+   * 数据来自 provider_probes：同一小时取最差结果，没有任何探活记录的小时
+   * 为空档。可用性按区间内的探活样本计算，只把「正常」计为可用，样本为零
+   * 时返回 null，避免无数据被误显示成 0%。
+   */
+  function channelStatus(hours: number): Record<string, unknown> {
+    const end = new Date()
+    end.setMinutes(0, 0, 0)
+    const start = new Date(end)
+    start.setHours(start.getHours() - (hours - 1))
+    const buckets: string[] = []
+    const cursor = new Date(start)
+    while (cursor.getTime() <= end.getTime()) {
+      buckets.push(localHourKey(cursor))
+      cursor.setHours(cursor.getHours() + 1)
+    }
+    const rows = store.providerHourlyProbes({ from: start.getTime(), to: end.getTime() + 60 * 60 * 1000 })
+    const byProvider = new Map<string, Map<string, { up: number; degraded: number; down: number; skipped: number }>>()
+    for (const row of rows) {
+      let hourMap = byProvider.get(row.providerId)
+      if (hourMap === undefined) {
+        hourMap = new Map()
+        byProvider.set(row.providerId, hourMap)
+      }
+      hourMap.set(row.hour, { up: row.up, degraded: row.degraded, down: row.down, skipped: row.skipped })
+    }
+    const data = store.listProviders()
+      .map(record => {
+        const hourMap = byProvider.get(record.id)
+        const series = buckets.map(hour => {
+          const value = hourMap?.get(hour)
+          const up = value?.up ?? 0
+          const degraded = value?.degraded ?? 0
+          const down = value?.down ?? 0
+          const skipped = value?.skipped ?? 0
+          return {
+            hour,
+            status: channelHourStatus(up, degraded, down),
+            samples: up + degraded + down,
+            up,
+            degraded,
+            down,
+            skipped,
+          }
+        })
+        const samples = series.reduce((sum, item) => sum + item.samples, 0)
+        const upTotal = series.reduce((sum, item) => sum + item.up, 0)
+        const last = store.latestProbe(record.id)
+        return {
+          id: record.id,
+          name: record.name,
+          type: record.type,
+          enabled: record.enabled === 1,
+          samples,
+          availability: samples === 0 ? null : (upTotal / samples) * 100,
+          lastProbe: last === undefined ? null : {
+            ts: last.ts,
+            level: last.level,
+            status: last.status,
+            durationMs: last.durationMs,
+            ...(last.model === undefined ? {} : { model: last.model }),
+            ...(last.error === undefined ? {} : { error: last.error }),
+          },
+          hours: series,
+        }
+      })
+      .sort((left, right) => (Number(right.enabled) - Number(left.enabled)) || left.name.localeCompare(right.name, 'zh-Hans-CN'))
+    const lastProbeAt = probes.lastProbeAt()
+    return {
+      from: start.getTime(),
+      to: end.getTime(),
+      hours,
+      generatedAt: Date.now(),
+      probe: {
+        intervalMs: probeIntervalMs > 0 ? probeIntervalMs : 0,
+        lastProbeAt: lastProbeAt ?? null,
+        nextProbeAt: probes.nextProbeAt() ?? null,
+      },
+      data,
+    }
+  }
+
   async function handleAdmin(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const url = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`)
     const path = url.pathname
@@ -1680,6 +1801,29 @@ export function createGatewayServer(options: GatewayServerOptions): GatewayServe
         host,
         databasePath: DEFAULT_DB_PATH,
         apiBaseUrl: `${host === '0.0.0.0' ? 'http://127.0.0.1' : `http://${host}`}:${port}/v1`,
+      })
+      return
+    }
+
+    if (req.method === 'GET' && path === '/api/status') {
+      const hoursParam = Number(url.searchParams.get('hours') ?? 24)
+      const hours = Number.isFinite(hoursParam) ? Math.min(Math.max(Math.trunc(hoursParam), 1), 336) : 24
+      writeJson(res, 200, channelStatus(hours))
+      return
+    }
+
+    if (req.method === 'POST' && path === '/api/status/probe') {
+      const results = await probes.runOnce('manual')
+      writeJson(res, 200, {
+        ok: true,
+        results: results.map(item => ({
+          providerId: item.providerId,
+          level: item.level,
+          status: item.status,
+          durationMs: item.durationMs,
+          ...(item.model === undefined ? {} : { model: item.model }),
+          ...(item.error === undefined ? {} : { error: item.error }),
+        })),
       })
       return
     }
@@ -2125,6 +2269,7 @@ export function createGatewayServer(options: GatewayServerOptions): GatewayServe
     ready,
     baseUrl: () => `http://${host}:${port}`,
     close: () => new Promise<void>((resolveClose, rejectClose) => {
+      probes.stop()
       for (const socket of sockets) socket.destroy()
       server.close(error => {
         if (error !== undefined) {
@@ -2136,6 +2281,15 @@ export function createGatewayServer(options: GatewayServerOptions): GatewayServe
     }),
     reloadProviders,
     refreshAllModels,
+    startProbes: delayMs => {
+      if (probeIntervalMs > 0) probes.start(delayMs)
+    },
+    probeNow: () => probes.runOnce('manual'),
+    probeSchedule: () => ({
+      intervalMs: probeIntervalMs > 0 ? probeIntervalMs : 0,
+      lastProbeAt: probes.lastProbeAt() ?? null,
+      nextProbeAt: probes.nextProbeAt() ?? null,
+    }),
     registry: () => registry,
   }
 }

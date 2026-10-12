@@ -19,6 +19,13 @@ const PORT = Number(process.env['TRAE_PROXY_PORT'] ?? 39310)
 const HOST = process.env['TRAE_PROXY_HOST'] ?? '127.0.0.1'
 /** 用量明细保留天数；0 表示永久保留。 */
 const USAGE_RETENTION_DAYS = Number(process.env['TRAE_PROXY_USAGE_RETENTION_DAYS'] ?? 180)
+/** 主动探活间隔（分钟）；0 表示关闭状态页探活。 */
+const PROBE_INTERVAL_MINUTES = Number(process.env['TRAE_PROXY_PROBE_INTERVAL_MINUTES'] ?? 15)
+const PROBE_INTERVAL_MS = Number.isFinite(PROBE_INTERVAL_MINUTES) && PROBE_INTERVAL_MINUTES > 0
+  ? Math.round(PROBE_INTERVAL_MINUTES * 60 * 1000)
+  : 0
+/** 探活明细保留天数，状态页最长只展示 14 天。 */
+const PROBE_RETENTION_DAYS = 30
 
 function ts(): string {
   return new Date().toISOString()
@@ -95,12 +102,19 @@ async function main(): Promise<void> {
     store,
     port: PORT,
     host: HOST,
+    probeIntervalMs: PROBE_INTERVAL_MS,
     logger,
   })
   await server.ready
 
   const reload = await server.reloadProviders()
   logger.info(`provider 已加载：${reload.enabled}/${reload.total} 启用`)
+  if (PROBE_INTERVAL_MS > 0) {
+    server.startProbes()
+    logger.info(`渠道主动探活已启动：每 ${PROBE_INTERVAL_MINUTES} 分钟一轮`)
+  } else {
+    logger.info('渠道主动探活已关闭（TRAE_PROXY_PROBE_INTERVAL_MINUTES=0）')
+  }
   void server.refreshAllModels().then(results => {
     for (const item of results) {
       if (item.error === undefined) logger.info(`模型目录已刷新: ${item.providerId} (${item.count})`)
@@ -122,6 +136,12 @@ async function main(): Promise<void> {
     const now = Date.now()
     store.deleteExpiredSessions(now)
     if (USAGE_RETENTION_DAYS > 0) pruneUsageOnce(store, now)
+    try {
+      const pruned = store.pruneProbes(now - PROBE_RETENTION_DAYS * 24 * 60 * 60 * 1000)
+      if (pruned > 0) logger.info(`探活记录清理完成，删除 ${pruned} 条`)
+    } catch (error: unknown) {
+      logger.warn(`探活记录清理失败: ${error instanceof Error ? error.message : String(error)}`)
+    }
   }, 60 * 60 * 1000)
   cleanupTimer.unref()
   if (USAGE_RETENTION_DAYS > 0) pruneUsageOnce(store, Date.now())

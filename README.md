@@ -59,6 +59,7 @@ curl http://127.0.0.1:39310/v1/chat/completions \
 
 - **控制台**：渠道状态、模型数、累计请求与 Token；
 - **渠道模型**：新增/编辑/启停/删除 provider，保存后热生效，Trae 类型无需 API Key；
+- **渠道状态**：定时主动探活每个渠道，按小时查看可用性与异常时段；
 - **API Keys**：创建/复制/吊销 key，可限制可访问 provider，支持一键唤起 CC Switch 官方导入；
 - **用量统计**：按今天 / 7 天 / 30 天 / 全部汇总，支持按 key 与模型统计；
 - **使用日志**：按日期、密钥、模型、状态筛选最近请求记录，支持分页与手动刷新。
@@ -94,6 +95,7 @@ TRAE_PROXY_KEY=tr-xxxxxxxx node scripts/inject-config.cjs
 | `TRAE_PROXY_PORT` | `39310` | 网关端口 |
 | `TRAE_PROXY_HOST` | `127.0.0.1` | 监听地址 |
 | `TRAE_PROXY_USAGE_RETENTION_DAYS` | `180` | 用量明细保留天数，`0` 表示永久保留 |
+| `TRAE_PROXY_PROBE_INTERVAL_MINUTES` | `15` | 渠道主动探活间隔（分钟），`0` 表示关闭 |
 | `OLLAMA_BIN` | 自动探测 | `ollama` CLI 可执行文件路径 |
 
 ## 安全
