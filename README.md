@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="web/public/logo.png" alt="trae-proxy" width="128" />
+  <img src="web/public/logo.svg" alt="trae-proxy" width="128" />
 </p>
 
 # trae-proxy

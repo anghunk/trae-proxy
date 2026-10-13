@@ -61,7 +61,7 @@ export function Sidebar({ view, onView, onLogout, theme, onToggleTheme }: {
       onCollapse={setCollapsed}
     >
       <div className="sidebar-brand">
-        <img className="brand-mark" src="/logo.png?v=2" alt="Trae Proxy" />
+        <img className="brand-mark" src="/logo.svg?v=2" alt="Trae Proxy" />
         <div className="brand-text">
           <div className="brand-name">Trae Proxy</div>
           <div className="brand-sub">统一模型网关</div>

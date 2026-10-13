@@ -63,7 +63,7 @@ export function AuthPage({ onDone, theme, onToggleTheme }: {
       <ThemeToggle theme={theme} onToggle={onToggleTheme} floating />
       <GitHubLink className="auth-github" />
       <Card className="auth-card">
-        <img className="brand-mark" src="/logo.png?v=2" alt="Trae Proxy" />
+        <img className="brand-mark" src="/logo.svg?v=2" alt="Trae Proxy" />
         <Title level={3}>{mode === 'setup' ? '创建管理员' : '登录管理台'}</Title>
         <Paragraph type="secondary">
           {mode === 'setup' ? '首次启动需要初始化本地管理员账户。' : '使用管理员账户登录统一网关控制台。'}
