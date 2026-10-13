@@ -769,7 +769,6 @@ body,
   min-width: 1px;
   border-radius: 2px;
   background: var(--heat-empty);
-  outline: 1px solid var(--heat-empty-outline);
   outline-offset: -1px;
   transition: opacity 0.12s ease;
 }

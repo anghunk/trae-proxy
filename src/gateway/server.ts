@@ -2204,10 +2204,15 @@ export function createGatewayServer(options: GatewayServerOptions): GatewayServe
     const extension = filePath.slice(filePath.lastIndexOf('.'))
     const type = MIME[extension] ?? 'application/octet-stream'
     const data = await readFile(filePath)
+    // 只有 Vite 输出到 /assets/ 的内容哈希资源可以长期强缓存；
+    // logo、favicon 等固定文件名必须每次校验，否则更新后浏览器会一直用旧图。
+    const cacheControl = extension === '.html' || !pathname.startsWith('/assets/')
+      ? 'no-cache'
+      : 'public, max-age=31536000, immutable'
     res.writeHead(200, {
       'Content-Type': type,
       'Content-Length': data.length,
-      'Cache-Control': extension === '.html' ? 'no-cache' : 'public, max-age=31536000, immutable',
+      'Cache-Control': cacheControl,
     })
     res.end(data)
     return true
