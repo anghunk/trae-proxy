@@ -4,12 +4,14 @@
   "private": true,
   "type": "module",
   "description": "统一本地模型网关：Trae 登录态 + 任意 OpenAI/Anthropic/Gemini 上游，带 React 配置台",
+  "workspaces": [
+    "web"
+  ],
   "scripts": {
     "start": "node src/serve.ts",
     "dev": "node src/serve.ts",
-    "build": "npm --prefix web run build",
-    "typecheck": "tsc --noEmit -p tsconfig.json && npm --prefix web run typecheck",
-    "install:web": "npm --prefix web install"
+    "build": "npm run build --workspace web",
+    "typecheck": "tsc --noEmit -p tsconfig.json && npm run typecheck --workspace web"
   },
   "engines": {
     "node": ">=22.19"

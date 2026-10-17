@@ -28,7 +28,7 @@
 - Node.js 22.19+ 或 24+，零第三方依赖；
 - 本机已安装并登录 Trae / TRAE SOLO CN 桌面端（登录态只读）；
 - 使用本地 Ollama 时需安装 `ollama` CLI，网关会在服务未运行时自动调用 CLI 启动；
-- 前端需构建一次：`npm install` 后执行 `npm run build`。
+- 前端需构建一次：在仓库根目录执行 `npm install` 后执行 `npm run build`（`npm install` 会通过 npm workspaces 一并安装 `web/` 的依赖）。
 
 Trae 登录态按区域自动探测，见 `src/paths.ts`。
 
