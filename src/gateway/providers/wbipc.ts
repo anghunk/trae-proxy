@@ -85,7 +85,10 @@ export function defaultWorkbuddyConfigDir(): string {
 export class WbipcConnection {
   private readonly socket: Socket
   private buffer = ''
-  private readonly waiters: Array<(message: Record<string, unknown>) => void> = []
+  private readonly waiters: Array<{
+    match: (message: Record<string, unknown>) => boolean
+    resolve: (message: Record<string, unknown>) => void
+  }> = []
   private readonly closed: Promise<void>
   private requestId = 0
   private requestChannel: string | undefined
@@ -127,9 +130,9 @@ export class WbipcConnection {
     const channel = this.requestChannel ?? await this.resolveRequestChannel(options.signal)
     const headers: Record<string, string> = {}
     for (const [key, value] of Object.entries(options.headers ?? {})) {
-      // daemon 只转发 content-type / accept，其余请求头会被拒绝。
+      // daemon 只允许这两个头；其余会在转发前被拒绝。
       const lower = key.toLowerCase()
-      if (lower === 'content-type' || lower === 'accept') headers[lower] = value
+      if ((lower === 'content-type' || lower === 'accept') && value !== '') headers[lower] = value
     }
     const params: Record<string, unknown> = { method: options.method.toUpperCase(), path: options.path }
     if (options.query !== undefined) params['query'] = options.query
@@ -169,7 +172,7 @@ export class WbipcConnection {
       ticket_id: ticketId,
       client: { kind: 'trae-proxy', id: 'trae-proxy', version: '1.0' },
     })
-    const challenge = await this.next(HANDSHAKE_TIMEOUT_MS, signal)
+    const challenge = await this.next(message => !('id' in message), HANDSHAKE_TIMEOUT_MS, signal)
     if (challenge['type'] === 'session_hello_error') {
       throw new Error(`wbipc 握手被拒绝: ${String(challenge['code'] ?? 'unknown')}`)
     }
@@ -182,7 +185,7 @@ export class WbipcConnection {
     const expected = proof(endpoint.ticket, 'server', transcript)
     if (expected !== challenge['server_proof']) throw new Error('wbipc 服务端证明校验失败')
     this.write({ type: 'session_prove', client_proof: proof(endpoint.ticket, 'client', transcript) })
-    const ack = await this.next(HANDSHAKE_TIMEOUT_MS, signal)
+    const ack = await this.next(message => !('id' in message), HANDSHAKE_TIMEOUT_MS, signal)
     if (ack['type'] === 'session_hello_error') {
       throw new Error(`wbipc 身份校验失败: ${String(ack['code'] ?? 'unknown')}`)
     }
@@ -209,57 +212,86 @@ export class WbipcConnection {
     this.requestId += 1
     const id = this.requestId
     this.write({ jsonrpc: '2.0', id, method, params, mode: 'call' })
-    for (;;) {
-      const message = await this.next(RPC_TIMEOUT_MS, signal)
-      if (message['id'] !== id) continue
-      const error = message['error']
-      if (typeof error === 'object' && error !== null) {
-        const record = error as Record<string, unknown>
-        throw new Error(`wbipc 调用 ${method} 失败: ${String(record['message'] ?? 'unknown')}`)
-      }
-      const result = message['result']
-      return typeof result === 'object' && result !== null ? result as Record<string, unknown> : {}
+    const message = await this.next(candidate => candidate['id'] === id, RPC_TIMEOUT_MS, signal, id)
+    const error = message['error']
+    if (typeof error === 'object' && error !== null) {
+      const record = error as Record<string, unknown>
+      throw new Error(`wbipc 调用 ${method} 失败: ${String(record['message'] ?? 'unknown')}`)
     }
+    const result = message['result']
+    return typeof result === 'object' && result !== null ? result as Record<string, unknown> : {}
   }
 
-  /** 取下一帧；超时或连接关闭时抛错。 */
-  private next(timeoutMs: number, signal?: AbortSignal): Promise<Record<string, unknown>> {
+  /**
+   * 取下一帧满足条件的消息。
+   *
+   * JSON-RPC 响应按 id 匹配，不能按到达顺序消费；否则前一个超时/取消的
+   * waiter 会在队列里吃掉后续响应，让整条连接永久挂起。
+   */
+  private next(
+    match: (message: Record<string, unknown>) => boolean,
+    timeoutMs: number,
+    signal?: AbortSignal,
+    cancelId?: number,
+  ): Promise<Record<string, unknown>> {
     if (this.failure !== undefined) return Promise.reject(this.failure)
     return new Promise<Record<string, unknown>>((resolve, reject) => {
       let settled = false
+      const waiter = {
+        match,
+        resolve: (message: Record<string, unknown>): void => finish(() => resolve(message)),
+      }
       const finish = (fn: () => void): void => {
         if (settled) return
         settled = true
         clearTimeout(timer)
         signal?.removeEventListener('abort', onAbort)
+        const index = this.waiters.indexOf(waiter)
+        if (index >= 0) this.waiters.splice(index, 1)
         fn()
       }
-      const onAbort = (): void => finish(() => reject(new Error('wbipc 请求已取消')))
-      const timer = setTimeout(() => finish(() => reject(new Error('wbipc 请求超时'))), timeoutMs)
+      const onAbort = (): void => {
+        this.cancelActiveRequest(cancelId)
+        finish(() => reject(new Error('wbipc 请求已取消')))
+      }
+      const timer = setTimeout(() => {
+        this.cancelActiveRequest(cancelId)
+        finish(() => reject(new Error('wbipc 请求超时')))
+      }, timeoutMs)
       if (signal?.aborted === true) {
         finish(() => reject(new Error('wbipc 请求已取消')))
         return
       }
       signal?.addEventListener('abort', onAbort, { once: true })
-      this.waiters.push(message => finish(() => resolve(message)))
+      this.waiters.push(waiter)
       void this.closed.then(() => {
         finish(() => reject(this.failure ?? new Error('wbipc 连接已关闭')))
       })
     })
   }
 
+  /** 尽力通知 daemon 取消当前 in-flight 调用，避免占住它的并发槽。 */
+  private cancelActiveRequest(id?: number): void {
+    try {
+      const params = id === undefined ? {} : { id }
+      this.socket.write(`${JSON.stringify({ jsonrpc: '2.0', method: '$/cancel', params })}\n`)
+    } catch {
+      // 取消失败不覆盖原始错误
+    }
+  }
+
   private onData(chunk: Buffer): void {
     this.buffer += chunk.toString('utf8')
-    if (this.buffer.length > MAX_FRAME_BYTES) {
-      this.failure = new Error('wbipc 帧超出上限')
-      this.destroy()
-      return
-    }
     for (;;) {
       const index = this.buffer.indexOf('\n')
       if (index < 0) break
       const line = this.buffer.slice(0, index)
       this.buffer = this.buffer.slice(index + 1)
+      if (line.length > MAX_FRAME_BYTES) {
+        this.failure = new Error('wbipc 帧超出上限')
+        this.destroy()
+        return
+      }
       if (line.trim() === '') continue
       let message: Record<string, unknown>
       try {
@@ -269,8 +301,12 @@ export class WbipcConnection {
       } catch {
         continue
       }
-      const waiter = this.waiters.shift()
-      if (waiter !== undefined) waiter(message)
+      const waiter = this.waiters.find(item => item.match(message))
+      if (waiter !== undefined) waiter.resolve(message)
+    }
+    if (this.buffer.length > MAX_FRAME_BYTES) {
+      this.failure = new Error('wbipc 帧超出上限')
+      this.destroy()
     }
   }
 

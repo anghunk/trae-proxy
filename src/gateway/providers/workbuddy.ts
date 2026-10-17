@@ -35,10 +35,19 @@ import {
 
 /** WorkBuddy 后端的对话补全路径（相对 daemon 解析出的 baseUrl）。 */
 const CHAT_PATH = '/v2/chat/completions'
+/** 官方客户端使用的 /console 兜底路径；仅在 /v2 被渠道校验拦截时重试。 */
+const CONSOLE_CHAT_PATH = '/console/chat/completions'
 /** 模型目录缓存时长。 */
 const MODEL_CACHE_TTL_MS = 5 * 60_000
 /** 上游要求必须流式；这里统一以流式请求，再按需在本地聚合。 */
 const UPSTREAM_STREAM = true
+/**
+ * wbipc 的 `http.fetch` 是 call 型 RPC，必须等上游整包结束后才能返回 body_b64，
+ * 因此拿不到 token 级增量。流式请求用 keep-alive 心跳给出“仍在处理”的反馈。
+ */
+const STREAM_KEEPALIVE_MS = 10_000
+/** 流式请求先短暂等待上游，快速失败时仍能返回真实 HTTP 状态码。 */
+const STREAM_GRACE_MS = 1_500
 
 export interface WorkbuddyProviderOptions {
   record: ProviderRecord
@@ -146,11 +155,161 @@ export class WorkbuddyProvider implements UpstreamProvider {
 
     const wantsStream = input['stream'] === true
     const catalog = readDesktopCatalog(this.configDir)
-    const upstreamBody = buildUpstreamBody(input, catalog.meta.get(model))
+    if (wantsStream) {
+      return this.streamChat(input, model, signal, catalog.meta.get(model))
+    }
+    return this.completeChat(input, model, signal, context, catalog.meta.get(model))
+  }
 
+  /**
+   * 流式对话。
+   *
+   * wbipc 只能返回整包 SSE，所以这里先立即回一个 SSE 响应并周期性发送注释行
+   * 心跳，等上游返回后再逐行写出真实事件。这样下游在长思考期间能持续收到
+   * 字节流，不会误判为卡死。
+   *
+   * @param input 已解析的请求体。
+   * @param model 上游模型 id。
+   * @param signal 调用方中断信号。
+   */
+  private async streamChat(
+    input: Record<string, unknown>,
+    model: string,
+    signal?: AbortSignal,
+    meta?: ModelEntry,
+  ): Promise<GatewayChatResult | GatewayChatFailure> {
+    const upstreamSse = this.requestUpstream(input, model, signal, meta)
+    const early = await Promise.race([
+      upstreamSse.then(result => ({ settled: true as const, result })),
+      new Promise<{ settled: false }>(resolve => {
+        const timer = setTimeout(() => resolve({ settled: false }), STREAM_GRACE_MS)
+        timer.unref?.()
+      }),
+    ])
+    if (early.settled) {
+      if (!early.result.ok) return early.result
+      return {
+        ok: true,
+        response: new Response(early.result.sse, {
+          status: 200,
+          headers: {
+            'Content-Type': 'text/event-stream',
+            'Cache-Control': 'no-cache',
+            'X-Accel-Buffering': 'no',
+          },
+        }),
+      }
+    }
+    const encoder = new TextEncoder()
+    const stream = new ReadableStream<Uint8Array>({
+      start: async controller => {
+        controller.enqueue(encoder.encode(': keep-alive\n\n'))
+        const keepalive = setInterval(() => {
+          try {
+            controller.enqueue(encoder.encode(': keep-alive\n\n'))
+          } catch {
+            // 下游已断开时由 abort 统一收尾
+          }
+        }, STREAM_KEEPALIVE_MS)
+        const onAbort = (): void => {
+          clearInterval(keepalive)
+          controller.error(new Error('客户端已取消请求'))
+        }
+        signal?.addEventListener('abort', onAbort, { once: true })
+        try {
+          const result = await upstreamSse
+          if (!result.ok) {
+            controller.enqueue(encoder.encode(sseError(result)))
+          } else {
+            controller.enqueue(encoder.encode(result.sse))
+          }
+          controller.close()
+        } catch (error: unknown) {
+          controller.enqueue(encoder.encode(sseError({
+            ok: false,
+            status: 502,
+            kind: 'server',
+            message: error instanceof Error ? error.message : String(error),
+          })))
+          controller.close()
+        } finally {
+          clearInterval(keepalive)
+          signal?.removeEventListener('abort', onAbort)
+        }
+      },
+    })
+    return {
+      ok: true,
+      response: new Response(stream, {
+        status: 200,
+        headers: {
+          'Content-Type': 'text/event-stream',
+          'Cache-Control': 'no-cache',
+          'X-Accel-Buffering': 'no',
+        },
+      }),
+    }
+  }
+
+  /**
+   * 非流式对话：上游只支持 SSE，由网关聚合为完整 chat.completion。
+   *
+   * @param input 已解析的请求体。
+   * @param model 上游模型 id。
+   * @param signal 调用方中断信号。
+   * @param context 会话上下文。
+   */
+  private async completeChat(
+    input: Record<string, unknown>,
+    model: string,
+    signal: AbortSignal | undefined,
+    context: ChatRequestContext | undefined,
+    meta?: ModelEntry,
+  ): Promise<GatewayChatResult | GatewayChatFailure> {
+    const result = await this.requestUpstream(input, model, signal, meta)
+    if (!result.ok) return result
+    const aggregated = aggregateSse(result.sse, model, context?.sessionId)
+    if (aggregated === undefined) {
+      return { ok: false, status: 502, kind: 'server', message: 'WorkBuddy 上游返回了无法解析的响应' }
+    }
+    return {
+      ok: true,
+      response: new Response(JSON.stringify(aggregated.json), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+      ...aggregated.usage === undefined ? {} : { usage: aggregated.usage },
+    }
+  }
+
+  /**
+   * 请求上游并做路径/连接兜底。
+   *
+   * @param input 已解析的请求体。
+   * @param model 上游模型 id。
+   * @param signal 调用方中断信号。
+   */
+  private async requestUpstream(
+    input: Record<string, unknown>,
+    model: string,
+    signal?: AbortSignal,
+    meta?: ModelEntry,
+  ): Promise<
+    | { ok: true; sse: string }
+    | GatewayChatFailure
+  > {
+    const upstreamBody = buildUpstreamBody(input, meta)
+    const headers = {
+      'content-type': 'application/json',
+      accept: 'text/event-stream',
+    }
     let upstream: Awaited<ReturnType<WbipcConnection['fetch']>>
     try {
-      upstream = await this.requestWithReconnect(upstreamBody, signal)
+      upstream = await this.requestWithReconnect(CHAT_PATH, upstreamBody, headers, signal)
+      if (upstream.status !== 200 && isChannelCheck(upstream.body.toString('utf8'))) {
+        this.logger?.('workbuddy channel check, retrying console path', { providerId: this.id })
+        upstream = await this.requestWithReconnect(CONSOLE_CHAT_PATH, upstreamBody, headers, signal)
+      }
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : String(error)
       const kind = classifyFailureText(message)
@@ -168,27 +327,7 @@ export class WorkbuddyProvider implements UpstreamProvider {
         message: readUpstreamError(text) ?? `WorkBuddy 上游返回 HTTP ${upstream.status}`,
       }
     }
-
-    const sse = upstream.body.toString('utf8')
-    if (wantsStream) {
-      return {
-        ok: true,
-        response: new Response(sse, { status: 200, headers: { 'Content-Type': 'text/event-stream' } }),
-        ...usageFromSse(sse) === undefined ? {} : { usage: usageFromSse(sse) },
-      }
-    }
-    const aggregated = aggregateSse(sse, model, context?.sessionId)
-    if (aggregated === undefined) {
-      return { ok: false, status: 502, kind: 'server', message: 'WorkBuddy 上游返回了无法解析的响应' }
-    }
-    return {
-      ok: true,
-      response: new Response(JSON.stringify(aggregated.json), {
-        status: 200,
-        headers: { 'Content-Type': 'application/json' },
-      }),
-      ...aggregated.usage === undefined ? {} : { usage: aggregated.usage },
-    }
+    return { ok: true, sse: upstream.body.toString('utf8') }
   }
 
   /** 面向管理台的运行状态。 */
@@ -213,16 +352,23 @@ export class WorkbuddyProvider implements UpstreamProvider {
   /**
    * 发起一次上游请求；连接失效（daemon 重启会换 socket 与 ticket）时重建后重试一次。
    *
+   * @param path 上游对话路径。
    * @param body 已构造好的上游请求体。
+   * @param headers 出站 HTTP 头（daemon 只允许 content-type / accept）。
    * @param signal 中断信号。
    */
-  private async requestWithReconnect(body: string, signal?: AbortSignal) {
+  private async requestWithReconnect(
+    path: string,
+    body: string,
+    headers: Record<string, string>,
+    signal?: AbortSignal,
+  ) {
     const first = await this.resolveConnection(signal)
     try {
       return await first.fetch({
         method: 'POST',
-        path: CHAT_PATH,
-        headers: { 'content-type': 'application/json', accept: 'text/event-stream' },
+        path,
+        headers,
         body,
         ...signal === undefined ? {} : { signal },
       })
@@ -233,8 +379,8 @@ export class WorkbuddyProvider implements UpstreamProvider {
       const retry = await this.resolveConnection(signal)
       return retry.fetch({
         method: 'POST',
-        path: CHAT_PATH,
-        headers: { 'content-type': 'application/json', accept: 'text/event-stream' },
+        path,
+        headers,
         body,
         ...signal === undefined ? {} : { signal },
       })
@@ -296,6 +442,32 @@ function resolveEffort(meta: ModelEntry | undefined): string | undefined {
   }
   if (efforts.includes('medium')) return 'medium'
   return efforts[0]
+}
+
+/**
+ * 判断上游是否返回了渠道校验拦截。
+ *
+ * 该错误码同时承载“内容审核拦截”等其他语义，因此必须同时看到渠道校验文案，
+ * 否则会把普通的 4xx 误判成可回落路径。
+ *
+ * @param text 上游错误响应正文。
+ */
+function isChannelCheck(text: string): boolean {
+  const lower = text.toLowerCase()
+  if (!lower.includes('11-128') && !lower.includes('11128')) return false
+  return text.includes('渠道校验') || lower.includes('channel verification') || lower.includes('official client')
+}
+
+/** 把上游失败封装成一段 SSE 错误事件，供已经写出响应头的流式请求收尾。 */
+function sseError(failure: GatewayChatFailure): string {
+  const payload = JSON.stringify({
+    error: {
+      message: failure.message,
+      type: failure.kind,
+      code: failure.kind,
+    },
+  })
+  return `event: error\ndata: ${payload}\n\ndata: [DONE]\n\n`
 }
 
 /** wbipc `http.fetch` 返回体的解析结果。 */
