@@ -23,6 +23,7 @@ export type ProviderType =
   | 'anthropic'
   | 'gemini'
   | 'ollama'
+  | 'workbuddy'
 
 export interface ProviderRecord {
   id: string

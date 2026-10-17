@@ -110,8 +110,12 @@ export function ChannelForm({
     if (!/^[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?$/.test(id)) return '渠道 ID 仅允许小写字母、数字和连字符（1-32 位）'
     if (name.trim() === '') return '请填写渠道名称'
     if (type !== 'trae-cn' && type !== 'trae-ai') {
-      if (baseUrl.trim() === '') return '请填写 Base URL'
-      if (!/^https?:\/\//.test(baseUrl.trim())) return 'Base URL 需要以 http:// 或 https:// 开头'
+      // trae 与 workbuddy 不需要手填 Base URL：前者读本地登录态，后者复用桌面端本地通道。
+      if (baseUrl.trim() === '') {
+        if (type !== 'workbuddy') return '请填写 Base URL'
+      } else if (!/^https?:\/\//.test(baseUrl.trim())) {
+        return 'Base URL 需要以 http:// 或 https:// 开头'
+      }
       if (needsKey && apiKey.trim() === '' && !(isEdit && initial?.apiKeySet)) return '请填写 API Key'
     }
     return undefined
@@ -237,23 +241,36 @@ export function ChannelForm({
                 <ProviderToggle enabled={enabled} onChange={setEnabled} />
               </Field>
               </Col>
-              {(type === 'openai' || type === 'anthropic' || type === 'gemini' || type === 'ollama') && (
+              {(type === 'openai' || type === 'anthropic' || type === 'gemini' || type === 'ollama' || type === 'workbuddy') && (
                 <>
-                  <Col xs={24} md={12}>
-                    <Field label="Base URL" hint={TYPE_HINT[type]}>
-                      <Input value={baseUrl} onChange={event => setBaseUrl(event.target.value)} placeholder="https://..." />
-                    </Field>
-                  </Col>
-                  <Col xs={24} md={12}>
-                    <Field label="API Key" hint={isEdit && initial?.apiKeySet ? '已保存，留空保持不变' : '明文保存在本地数据库'}>
-                      <Input.Password
-                        value={apiKey}
-                        onChange={event => setApiKey(event.target.value)}
-                        placeholder={isEdit && initial?.apiKeySet ? '••••••••' : 'sk-...'}
-                        autoComplete="new-password"
+                  {type !== 'workbuddy' && (
+                    <Col xs={24} md={12}>
+                      <Field label="Base URL" hint={TYPE_HINT[type]}>
+                        <Input value={baseUrl} onChange={event => setBaseUrl(event.target.value)} placeholder="https://..." />
+                      </Field>
+                    </Col>
+                  )}
+                  {type === 'workbuddy' ? (
+                    <Col xs={24}>
+                      <Alert
+                        type="info"
+                        showIcon
+                        message="无需填写凭据"
+                        description="网关通过 WorkBuddy 桌面端的本地通道转发，由其自动带上登录态。请保持 WorkBuddy 处于运行且已登录状态。"
                       />
-                    </Field>
-                  </Col>
+                    </Col>
+                  ) : (
+                    <Col xs={24} md={12}>
+                      <Field label="API Key" hint={isEdit && initial?.apiKeySet ? '已保存，留空保持不变' : '明文保存在本地数据库'}>
+                        <Input.Password
+                          value={apiKey}
+                          onChange={event => setApiKey(event.target.value)}
+                          placeholder={isEdit && initial?.apiKeySet ? '••••••••' : 'sk-...'}
+                          autoComplete="new-password"
+                        />
+                      </Field>
+                    </Col>
+                  )}
                 </>
               )}
               <Col xs={24} md={12}>

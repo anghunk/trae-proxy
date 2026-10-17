@@ -313,7 +313,7 @@ function providerRecordFromBody(body: Record<string, unknown>, existing: Provide
   const id = typeof body['id'] === 'string' ? body['id'].trim().toLowerCase() : ''
   if (!isValidProviderId(id)) throw new Error('provider id 仅允许小写字母、数字和连字符（1-32 位）')
   const type = String(body['type'] ?? '')
-  const types: ProviderType[] = ['trae-cn', 'trae-ai', 'openai', 'anthropic', 'gemini', 'ollama']
+  const types: ProviderType[] = ['trae-cn', 'trae-ai', 'openai', 'anthropic', 'gemini', 'ollama', 'workbuddy']
   if (!types.includes(type as ProviderType)) throw new Error(`不支持的 provider 类型: ${type}`)
   const name = typeof body['name'] === 'string' ? body['name'].trim() : ''
   if (name === '') throw new Error('provider 名称不能为空')

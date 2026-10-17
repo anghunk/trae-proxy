@@ -75,6 +75,7 @@ curl http://127.0.0.1:39310/v1/chat/completions \
 | `anthropic` | Anthropic Messages API |
 | `gemini` | Google Gemini API |
 | `ollama` | 本地 Ollama，服务未运行时自动调用本机 CLI |
+| `workbuddy` | 本机 WorkBuddy，经桌面端本地通道反代出模型 |
 
 > 上游 API key 明文存于本地 SQLite；管理员密码与网关 API key 只存哈希。
 
@@ -98,6 +99,31 @@ TRAE_PROXY_KEY=tr-xxxxxxxx node scripts/inject-config.cjs
 | `TRAE_PROXY_PROBE_INTERVAL_MINUTES` | `15` | 渠道主动探活间隔（分钟），`0` 表示关闭 |
 | `OLLAMA_BIN` | 自动探测 | `ollama` CLI 可执行文件路径 |
 
+### WorkBuddy 渠道
+
+WorkBuddy 不提供 API Key，登录凭据只存在桌面端进程内（凭据以 at-rest 密钥加密，
+密钥在系统钥匙串中，外部进程无法取出）。因此本渠道不走凭据，而是复用桌面端
+daemon 开放的本地转发通道：
+
+```
+OpenAI /v1/chat/completions
+  → ~/.workbuddy/wbipc/endpoint.json 的 Unix socket（HMAC 握手）
+    → wb.request/http.fetch（daemon 自动注入 Authorization / X-User-Id）
+      → WorkBuddy 后端 /v2/chat/completions
+```
+
+由于凭据由 daemon 在转发时注入，**无需填写 API Key，也无需单独登录**；只要
+WorkBuddy 桌面端在运行且已登录即可。上游返回的本身就是 OpenAI 兼容 SSE，流式
+直接透传，非流式在网关内聚合。
+
+**模型清单与客户端保持一致**：目录来自桌面端缓存的运行时产品配置
+（`~/.workbuddy/local_storage/`）里 `agents[cli].models`，也就是软件模型下拉框的
+数据源。想拿到最新清单，先打开一次 WorkBuddy 让它刷新配置，再到管理台点
+「获取全部模型」。默认暴露该账号全部可选模型；若只想开放其中几个，在渠道的
+「模型映射」里勾选即可。
+
+可用 `settings` 覆盖 `configDir`（默认 `~/.workbuddy`）。
+
 ## 安全
 
 - 默认仅监听 `127.0.0.1`；
@@ -114,4 +140,7 @@ TRAE_PROXY_KEY=tr-xxxxxxxx node scripts/inject-config.cjs
 | `403` | key 的可访问范围未包含目标 provider |
 | `404` 模型未知 | 模型 id 需带前缀，如 `trae-cn/glm-5.3` |
 | Ollama 模型为空 | 安装 `ollama` CLI 并执行 `ollama pull <model>`；网关会自动探测常见安装位置 |
+| WorkBuddy 报「未找到本地转发通道」 | WorkBuddy 桌面端未运行；启动并登录后重试 |
+| WorkBuddy 报 `authentication` | 桌面端未登录，或登录态已失效；在 WorkBuddy 里重新登录 |
+| WorkBuddy 模型为空 | 先打开一次 WorkBuddy 让它拉取配置，再到管理台点「获取全部模型」 |
 | 前端空白 | 先 `npm run build` 再访问管理台 |

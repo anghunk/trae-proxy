@@ -9,6 +9,7 @@ import type { ProviderRecord, ProviderType } from './store.ts'
 import type { UpstreamProvider } from './providers.ts'
 import { OpenAiCompatibleProvider } from './providers/openai.ts'
 import { OllamaProvider } from './providers/ollama.ts'
+import { WorkbuddyProvider } from './providers/workbuddy.ts'
 import { AnthropicProvider } from './providers/anthropic.ts'
 import { GeminiProvider } from './providers/gemini.ts'
 import { TraeGatewayProvider } from './providers/trae.ts'
@@ -39,6 +40,8 @@ export function createProvider(
       return new OpenAiCompatibleProvider({ record, logger: options.logger })
     case 'ollama':
       return new OllamaProvider({ record, logger: options.logger })
+    case 'workbuddy':
+      return new WorkbuddyProvider({ record, logger: options.logger })
     case 'anthropic':
       return new AnthropicProvider({ record, logger: options.logger })
     case 'gemini':
@@ -71,6 +74,7 @@ export function providerTypeLabel(type: ProviderType): string {
     anthropic: 'Anthropic',
     gemini: 'Gemini',
     ollama: 'Ollama',
+    workbuddy: 'WorkBuddy',
   }
   return labels[type]
 }

@@ -9,7 +9,7 @@ export interface AdminSession {
 
 export interface Provider {
   id: string
-  type: 'trae-cn' | 'trae-ai' | 'openai' | 'anthropic' | 'gemini' | 'ollama'
+  type: 'trae-cn' | 'trae-ai' | 'openai' | 'anthropic' | 'gemini' | 'ollama' | 'workbuddy'
   name: string
   enabled: boolean
   baseUrl?: string
