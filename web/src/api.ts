@@ -120,7 +120,10 @@ export interface ChannelProbeSummary {
 
 export interface ChannelStatusHour {
   hour: string
+  /** 该小时最后一次探活对应的显示状态。 */
   status: ChannelStatusLevel
+  /** 该小时最后一次探活时间；没有探活时为 null。 */
+  latestTs: number | null
   /** 该小时内参与判定的探活次数（不含「跳过」）。 */
   samples: number
   up: number

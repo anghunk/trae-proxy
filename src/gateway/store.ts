@@ -1028,6 +1028,8 @@ export class GatewayStore {
   providerHourlyProbes(options: { from: number; to: number }): Array<{
     providerId: string
     hour: string
+    latestLevel: ProbeLevel
+    latestTs: number
     up: number
     degraded: number
     down: number
@@ -1036,21 +1038,38 @@ export class GatewayStore {
   }> {
     const rows = this.db
       .prepare(
-        `SELECT provider_id,
-                strftime('%Y-%m-%d %H:00', ts / 1000, 'unixepoch', 'localtime') AS hour,
+        `WITH hourly AS (
+           SELECT provider_id,
+                  strftime('%Y-%m-%d %H:00', ts / 1000, 'unixepoch', 'localtime') AS hour,
+                  level,
+                  ts,
+                  duration_ms,
+                  ROW_NUMBER() OVER (
+                    PARTITION BY provider_id,
+                                 strftime('%Y-%m-%d %H:00', ts / 1000, 'unixepoch', 'localtime')
+                    ORDER BY ts DESC, id DESC
+                  ) AS row_num
+           FROM provider_probes
+           WHERE ts >= ? AND ts < ?
+         )
+         SELECT provider_id,
+                hour,
+                MAX(CASE WHEN row_num = 1 THEN level END) AS latest_level,
+                MAX(CASE WHEN row_num = 1 THEN ts END) AS latest_ts,
                 SUM(CASE WHEN level = 'up' THEN 1 ELSE 0 END) AS up,
                 SUM(CASE WHEN level = 'degraded' THEN 1 ELSE 0 END) AS degraded,
                 SUM(CASE WHEN level = 'down' THEN 1 ELSE 0 END) AS down,
                 SUM(CASE WHEN level = 'skipped' THEN 1 ELSE 0 END) AS skipped,
                 COALESCE(SUM(duration_ms), 0) AS duration_ms
-         FROM provider_probes
-         WHERE ts >= ? AND ts < ?
+         FROM hourly
          GROUP BY provider_id, hour
          ORDER BY provider_id, hour`,
       )
       .all(options.from, options.to) as {
       provider_id: string
       hour: string
+      latest_level: ProbeLevel
+      latest_ts: number
       up: number | null
       degraded: number | null
       down: number | null
@@ -1060,6 +1079,8 @@ export class GatewayStore {
     return rows.map(row => ({
       providerId: row.provider_id,
       hour: row.hour,
+      latestLevel: row.latest_level,
+      latestTs: row.latest_ts,
       up: row.up ?? 0,
       degraded: row.degraded ?? 0,
       down: row.down ?? 0,

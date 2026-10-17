@@ -232,6 +232,12 @@ export function StatusPage() {
             <span>状态</span>
             <strong>{LEVEL_LABEL[hovered.hour.status]}</strong>
           </span>
+          {hovered.hour.latestTs !== null && (
+            <span className="chart-tooltip-row">
+              <span>最新一次</span>
+              <strong>{formatClock(hovered.hour.latestTs)}</strong>
+            </span>
+          )}
           <span className="chart-tooltip-row">
             <span>探活</span>
             <strong>{hovered.hour.samples === 0 ? '—' : `${hovered.hour.samples} 次`}</strong>

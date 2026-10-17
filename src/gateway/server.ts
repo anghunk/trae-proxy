@@ -29,12 +29,24 @@ import {
 import { isValidProviderId, upsertProviderInstance } from './factory.ts'
 import { ProviderProbeRunner, type ProbeOutcome } from './probe.ts'
 import { ProviderRegistry, refreshProviderModels, type GatewayModel } from './providers.ts'
-import { DEFAULT_DB_PATH, type ProviderRecord, type ProviderType } from './store.ts'
+import { DEFAULT_DB_PATH, type ProbeLevel, type ProviderRecord, type ProviderType } from './store.ts'
 import { SseDecoder } from '../sse.ts'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 export const ROOT = dirname(dirname(HERE))
 export const DEFAULT_WEB_DIST = join(ROOT, 'web', 'dist')
+
+/** 管理台单页路由；刷新这些地址时应返回 index.html，而不是 API 或其他业务路由。 */
+const WEB_APP_PATHS = new Set([
+  '/overview',
+  '/providers',
+  '/status',
+  '/keys',
+  '/usage',
+  '/logs',
+  '/settings/password',
+  '/settings/gateway',
+])
 
 const BODY_LIMIT = 64 * 1024 * 1024
 const SESSION_COOKIE = 'trae_proxy_session'
@@ -1623,12 +1635,12 @@ export function createGatewayServer(options: GatewayServerOptions): GatewayServe
 
   type ChannelStatusLevel = 'operational' | 'degraded' | 'outage' | 'idle'
 
-  /** 同一小时内取最差探活结果：有故障即故障，有波动即波动，否则正常。 */
-  function channelHourStatus(up: number, degraded: number, down: number): ChannelStatusLevel {
-    if (up + degraded + down <= 0) return 'idle'
-    if (down > 0) return 'outage'
-    if (degraded > 0) return 'degraded'
-    return 'operational'
+  /** 把单次探活结果映射为状态页色块。 */
+  function probeStatus(level: ProbeLevel): ChannelStatusLevel {
+    if (level === 'up') return 'operational'
+    if (level === 'degraded') return 'degraded'
+    if (level === 'down') return 'outage'
+    return 'idle'
   }
 
   /** 本地小时键，格式与 store 的 strftime 输出保持一致。 */
@@ -1642,9 +1654,9 @@ export function createGatewayServer(options: GatewayServerOptions): GatewayServe
   /**
    * 汇总每个渠道最近若干个小时的主动探活状态。
    *
-   * 数据来自 provider_probes：同一小时取最差结果，没有任何探活记录的小时
-   * 为空档。可用性按区间内的探活样本计算，只把「正常」计为可用，样本为零
-   * 时返回 null，避免无数据被误显示成 0%。
+   * 数据来自 provider_probes：同一小时有多次探活时，色块取该小时最后一次
+   * 结果；没有任何探活记录的小时为空档。可用性按区间内的探活样本计算，
+   * 只把「正常」计为可用，样本为零时返回 null，避免无数据被误显示成 0%。
    */
   function channelStatus(hours: number): Record<string, unknown> {
     const end = new Date()
@@ -1658,14 +1670,28 @@ export function createGatewayServer(options: GatewayServerOptions): GatewayServe
       cursor.setHours(cursor.getHours() + 1)
     }
     const rows = store.providerHourlyProbes({ from: start.getTime(), to: end.getTime() + 60 * 60 * 1000 })
-    const byProvider = new Map<string, Map<string, { up: number; degraded: number; down: number; skipped: number }>>()
+    const byProvider = new Map<string, Map<string, {
+      latestLevel: ProbeLevel
+      latestTs: number
+      up: number
+      degraded: number
+      down: number
+      skipped: number
+    }>>()
     for (const row of rows) {
       let hourMap = byProvider.get(row.providerId)
       if (hourMap === undefined) {
         hourMap = new Map()
         byProvider.set(row.providerId, hourMap)
       }
-      hourMap.set(row.hour, { up: row.up, degraded: row.degraded, down: row.down, skipped: row.skipped })
+      hourMap.set(row.hour, {
+        latestLevel: row.latestLevel,
+        latestTs: row.latestTs,
+        up: row.up,
+        degraded: row.degraded,
+        down: row.down,
+        skipped: row.skipped,
+      })
     }
     const data = store.listProviders()
       .map(record => {
@@ -1678,7 +1704,8 @@ export function createGatewayServer(options: GatewayServerOptions): GatewayServe
           const skipped = value?.skipped ?? 0
           return {
             hour,
-            status: channelHourStatus(up, degraded, down),
+            status: value === undefined ? 'idle' : probeStatus(value.latestLevel),
+            latestTs: value?.latestTs ?? null,
             samples: up + degraded + down,
             up,
             degraded,
@@ -2218,6 +2245,18 @@ export function createGatewayServer(options: GatewayServerOptions): GatewayServe
     return true
   }
 
+  /** 判断请求是否来自浏览器页面导航，而非脚本或 API 客户端。 */
+  function wantsHtmlPage(req: IncomingMessage): boolean {
+    const accept = typeof req.headers.accept === 'string' ? req.headers.accept : ''
+    return accept.includes('text/html')
+  }
+
+  /** 判断路径是否是管理台页面，包括 /providers/<id> 详情地址。 */
+  function isWebAppPath(path: string): boolean {
+    const normalized = path.length > 1 ? path.replace(/\/+$/, '') : path
+    return WEB_APP_PATHS.has(normalized) || /^\/providers\/[^/]+$/.test(normalized)
+  }
+
   async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const url = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`)
     const path = url.pathname
@@ -2225,6 +2264,12 @@ export function createGatewayServer(options: GatewayServerOptions): GatewayServe
       if (req.method === 'GET' && (path === '/healthz' || path === '/healthz/')) {
         writeJson(res, 200, { ok: true, service: 'trae-proxy-gateway' })
         return
+      }
+      // 管理台的 /status 是页面路由，与需要 API Key 的只读状态接口共用地址。
+      // 浏览器刷新页面时 Accept 包含 text/html，此时优先返回前端入口。
+      if (req.method === 'GET' && isWebAppPath(path) && wantsHtmlPage(req)) {
+        const served = await serveStatic(req, res)
+        if (served) return
       }
       if (req.method === 'GET' && (path === '/status' || path === '/status/')) {
         const key = authenticateApiKey(store, req.headers.authorization)
