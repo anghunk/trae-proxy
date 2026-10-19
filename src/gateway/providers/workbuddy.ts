@@ -1,25 +1,23 @@
 /**
- * WorkBuddy 本地上游：通过桌面端 daemon 的 wbipc 通道反向代理出模型能力。
+ * WorkBuddy 上游：复用登录态直连 WorkBuddy 官方对话接口。
  *
- * WorkBuddy 不提供 API Key，登录凭据只存在桌面端进程内（凭据用 at-rest 密钥加密，
- * 密钥在系统钥匙串里，外部进程取不到）。但它留了一条合法的本地转发通道：
- * daemon 在 `~/.workbuddy/wbipc/` 暴露 Unix socket，其中 `wb.request` 的
- * `http.fetch` 方法在转发时会**自动注入 `Authorization` / `X-User-Id` 等凭据**。
+ * 早先的实现走桌面端 daemon 的 wbipc `http.fetch`。那条通道是 call 型 RPC，
+ * 宿主硬编码 50s 超时且 v1 协议没有 stream 方法，长回答必然被掐断。现在改为
+ * 持有 WorkBuddy 登录态直连 `copilot.tencent.com/v2`，做真正的 SSE 流式转发。
  *
- * 因此本 provider 不再启动 CLI、也不需要登录：
- *   OpenAI /v1/chat/completions
- *     → wbipc `http.fetch`（daemon 注入登录态）
- *       → WorkBuddy 后端 `/v2/chat/completions`
- *
- * 上游返回的就是标准 OpenAI 兼容 SSE，因此流式可直接透传；非流式在本地聚合。
+ * 登录态来源按优先级：
+ *   1. 管理台里完成过一次浏览器 OAuth（推荐，可自动刷新）；
+ *   2. 本机其它客户端（magpie / OpenCode）保存的 WorkBuddy 登录态
+ *      （仅取 access token，不碰一次性 refresh token）。
  *
  * @module trae-proxy/gateway/providers/workbuddy
  */
 
 import { randomUUID } from 'node:crypto'
 import { readFileSync, readdirSync, statSync } from 'node:fs'
+import { homedir } from 'node:os'
 import { join } from 'node:path'
-import type { ProviderRecord } from '../store.ts'
+import { CONFIG_DIR, type ProviderRecord } from '../store.ts'
 import type {
   ChatRequestContext,
   GatewayChatFailure,
@@ -28,80 +26,107 @@ import type {
   UpstreamProvider,
 } from '../providers.ts'
 import {
-  WbipcConnection,
-  defaultWorkbuddyConfigDir,
-  readWbipcEndpoint,
-} from './wbipc.ts'
+  WORKBUDDY_API,
+  WorkbuddyApiError,
+  WorkbuddyCredentialStore,
+  buildWorkbuddyHeaders,
+  describeCredential,
+  fetchWorkbuddyConfig,
+  pollWorkbuddyLogin,
+  startWorkbuddyLogin,
+  type WorkbuddyCredential,
+} from './workbuddy-auth.ts'
+import {
+  normalizeWorkbuddyRequest,
+  restoreToolNames,
+  type NormalizedRequest,
+} from './workbuddy-request.ts'
 
-/** WorkBuddy 后端的对话补全路径（相对 daemon 解析出的 baseUrl）。 */
-const CHAT_PATH = '/v2/chat/completions'
-/** 官方客户端使用的 /console 兜底路径；仅在 /v2 被渠道校验拦截时重试。 */
-const CONSOLE_CHAT_PATH = '/console/chat/completions'
-/** 模型目录缓存时长。 */
+/** 对话补全路径（`WORKBUDDY_API` 已含 `/v2` 前缀）。 */
+const CHAT_PATH = '/chat/completions'
+/** 本机目录兜底缓存时长。 */
+const LOCAL_CACHE_TTL_MS = 60_000
+/** 上游目录缓存时长。 */
 const MODEL_CACHE_TTL_MS = 5 * 60_000
-/** 上游要求必须流式；这里统一以流式请求，再按需在本地聚合。 */
-const UPSTREAM_STREAM = true
-/**
- * wbipc 的 `http.fetch` 是 call 型 RPC，必须等上游整包结束后才能返回 body_b64，
- * 因此拿不到 token 级增量。流式请求用 keep-alive 心跳给出“仍在处理”的反馈。
- */
-const STREAM_KEEPALIVE_MS = 10_000
-/** 流式请求先短暂等待上游，快速失败时仍能返回真实 HTTP 状态码。 */
-const STREAM_GRACE_MS = 1_500
+/** 默认请求超时：流式长回答需要给足时间。 */
+const DEFAULT_TIMEOUT_MS = 10 * 60_000
+/** 部分模型的兜底推理档位（上游要求必须显式指定）。 */
+const FALLBACK_REASONING_MODELS: Readonly<Record<string, string>> = {
+  'glm-5.1': 'medium',
+  'glm-5v-turbo': 'medium',
+  'minimax-m3': 'medium',
+  'kimi-k2.7': 'medium',
+  'kimi-k2.6': 'medium',
+  mimo: 'high',
+}
 
 export interface WorkbuddyProviderOptions {
   record: ProviderRecord
   logger?: (message: string, detail?: unknown) => void
+  /** 登录态文件路径；默认放在 `config/workbuddy-<id>.json`。 */
+  credentialPath?: string
 }
 
-/** 从桌面端产品配置里解析出的模型条目。 */
+/** 从上游 / 本地配置解析出的模型条目。 */
 interface ModelEntry {
   id: string
   name: string
   contextWindow?: number
   maxTokens?: number
-  /** 该模型支持的推理档位；用于修正 glm-5.1 这类必须显式指定的模型。 */
-  supportedEfforts?: string[]
-  /**
-   * 未显式指定时使用的推理档位。
-   *
-   * 部分模型（如 glm-5.1）不列出 `supportedEfforts`，只给一个固定档位，
-   * 但上游要求请求必须带 `reasoning_effort`，缺省会报 11150。
-   */
+  /** 未显式指定时使用的推理档位。 */
   defaultEffort?: string
 }
 
-/** 产品配置里 `agents[].name === 'cli'` 的可用模型子集。 */
+/** 产品配置里 `agents[name=cli].models` 的可用模型子集。 */
 interface DesktopCatalog {
-  /** 软件里实际可选的模型 id（与界面一致）。 */
   ids: string[]
-  /** id → 元数据。 */
   meta: Map<string, ModelEntry>
+}
+
+/** 浏览器登录的中间状态（按 provider 保存，跨实例存活）。 */
+const pendingLogins = new Map<string, string>()
+
+/** 管理台可用的登录态操作。 */
+export interface WorkbuddySessionApi {
+  /** 当前登录态摘要。 */
+  sessionStatus(): Promise<ReturnType<typeof describeCredential>>
+  /** 发起浏览器登录，返回需要用户打开的地址。 */
+  startLogin(): Promise<{ url: string }>
+  /** 轮询登录结果；成功后写入凭据文件。 */
+  pollLogin(): Promise<{ status: 'pending' | 'done' | 'failed'; accountId?: string; error?: string }>
+  /** 清除登录态。 */
+  signOut(): Promise<void>
 }
 
 export class WorkbuddyProvider implements UpstreamProvider {
   readonly id: string
   private readonly record: ProviderRecord
   private readonly logger?: (message: string, detail?: unknown) => void
-  private readonly configDir: string
-  private connection: WbipcConnection | undefined
-  private connectionPromise: Promise<WbipcConnection> | undefined
+  private readonly credentials: WorkbuddyCredentialStore
   private modelCache: { at: number; models: GatewayModel[] } | undefined
+  private localCache: { at: number; catalog: DesktopCatalog } | undefined
+  /** 模型 id → 元数据；上游目录与本地配置都会写入，用于补齐推理档位。 */
+  private readonly modelMeta = new Map<string, ModelEntry>()
 
   constructor(options: WorkbuddyProviderOptions) {
     this.id = options.record.id
     this.record = options.record
     this.logger = options.logger
     const settings = parseSettings(options.record.settings)
-    this.configDir = typeof settings['configDir'] === 'string' && settings['configDir'] !== ''
-      ? settings['configDir']
-      : defaultWorkbuddyConfigDir()
+    const configured = typeof settings['credentialPath'] === 'string' && settings['credentialPath'] !== ''
+      ? settings['credentialPath']
+      : undefined
+    this.credentials = new WorkbuddyCredentialStore(
+      options.credentialPath ?? configured ?? defaultCredentialPath(this.id),
+      options.logger,
+    )
   }
 
   /**
-   * 返回软件里可选的模型目录。
+   * 返回 WorkBuddy 的可用模型目录。
    *
-   * @returns 与 WorkBuddy 客户端「模型选择」一致的模型列表。
+   * 优先问上游 `/v3/config`（需要登录态）；未登录时退回桌面端本地配置，
+   * 保证渠道在没有登录前也能显示模型。
    */
   async listModels(): Promise<GatewayModel[]> {
     const cached = this.modelCache
@@ -113,18 +138,10 @@ export class WorkbuddyProvider implements UpstreamProvider {
 
   /** 绕过缓存重新读取模型目录。 */
   async refreshModels(): Promise<GatewayModel[]> {
-    const catalog = readDesktopCatalog(this.configDir)
-    const models = catalog.ids
-      .map(id => catalog.meta.get(id))
-      .filter((entry): entry is ModelEntry => entry !== undefined)
-      .map(entry => ({
-        id: entry.id,
-        name: entry.name,
-        ...entry.contextWindow === undefined ? {} : { contextWindow: entry.contextWindow },
-        ...entry.maxTokens === undefined ? {} : { maxTokens: entry.maxTokens },
-      }))
+    const live = await this.fetchLiveModels()
+    const models = live.length > 0 ? live : this.localModels()
     if (models.length === 0) {
-      throw new Error('未能从 WorkBuddy 配置中读取模型目录，请确认桌面端已登录并至少启动过一次')
+      throw new Error('未能获取 WorkBuddy 模型目录，请先在管理台完成一次 WorkBuddy 登录')
     }
     this.modelCache = { at: Date.now(), models }
     return models
@@ -133,9 +150,8 @@ export class WorkbuddyProvider implements UpstreamProvider {
   /**
    * 执行一次对话。
    *
-   * @param bodyJson OpenAI chat/completions 请求体（model 已去掉 provider 前缀）。
-   * @param signal 调用方中断信号。
-   * @returns 流式时透传上游 SSE；非流式时返回聚合后的 JSON。
+   * 上游只支持流式，因此始终以流式请求；入站为 `stream:false` 时由网关
+   * 侧统一聚合（见 server.ts 的 aggregateChatSse）。
    */
   async chat(
     bodyJson: string,
@@ -144,7 +160,11 @@ export class WorkbuddyProvider implements UpstreamProvider {
   ): Promise<GatewayChatResult | GatewayChatFailure> {
     let input: Record<string, unknown>
     try {
-      input = JSON.parse(bodyJson) as Record<string, unknown>
+      const parsed = JSON.parse(bodyJson) as unknown
+      if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+        return { ok: false, status: 400, kind: 'client', message: 'invalid JSON request' }
+      }
+      input = parsed as Record<string, unknown>
     } catch {
       return { ok: false, status: 400, kind: 'client', message: 'invalid JSON request' }
     }
@@ -153,471 +173,264 @@ export class WorkbuddyProvider implements UpstreamProvider {
     const messages = Array.isArray(input['messages']) ? input['messages'] : []
     if (messages.length === 0) return { ok: false, status: 400, kind: 'client', message: 'messages 不能为空' }
 
-    const wantsStream = input['stream'] === true
-    const catalog = readDesktopCatalog(this.configDir)
-    if (wantsStream) {
-      return this.streamChat(input, model, signal, catalog.meta.get(model))
-    }
-    return this.completeChat(input, model, signal, context, catalog.meta.get(model))
-  }
-
-  /**
-   * 流式对话。
-   *
-   * wbipc 只能返回整包 SSE，所以这里先立即回一个 SSE 响应并周期性发送注释行
-   * 心跳，等上游返回后再逐行写出真实事件。这样下游在长思考期间能持续收到
-   * 字节流，不会误判为卡死。
-   *
-   * @param input 已解析的请求体。
-   * @param model 上游模型 id。
-   * @param signal 调用方中断信号。
-   */
-  private async streamChat(
-    input: Record<string, unknown>,
-    model: string,
-    signal?: AbortSignal,
-    meta?: ModelEntry,
-  ): Promise<GatewayChatResult | GatewayChatFailure> {
-    const upstreamSse = this.requestUpstream(input, model, signal, meta)
-    const early = await Promise.race([
-      upstreamSse.then(result => ({ settled: true as const, result })),
-      new Promise<{ settled: false }>(resolve => {
-        const timer = setTimeout(() => resolve({ settled: false }), STREAM_GRACE_MS)
-        timer.unref?.()
-      }),
-    ])
-    if (early.settled) {
-      if (!early.result.ok) return early.result
-      return {
-        ok: true,
-        response: new Response(early.result.sse, {
-          status: 200,
-          headers: {
-            'Content-Type': 'text/event-stream',
-            'Cache-Control': 'no-cache',
-            'X-Accel-Buffering': 'no',
-          },
-        }),
-      }
-    }
-    const encoder = new TextEncoder()
-    const stream = new ReadableStream<Uint8Array>({
-      start: async controller => {
-        controller.enqueue(encoder.encode(': keep-alive\n\n'))
-        const keepalive = setInterval(() => {
-          try {
-            controller.enqueue(encoder.encode(': keep-alive\n\n'))
-          } catch {
-            // 下游已断开时由 abort 统一收尾
-          }
-        }, STREAM_KEEPALIVE_MS)
-        const onAbort = (): void => {
-          clearInterval(keepalive)
-          controller.error(new Error('客户端已取消请求'))
-        }
-        signal?.addEventListener('abort', onAbort, { once: true })
-        try {
-          const result = await upstreamSse
-          if (!result.ok) {
-            controller.enqueue(encoder.encode(sseError(result)))
-          } else {
-            controller.enqueue(encoder.encode(result.sse))
-          }
-          controller.close()
-        } catch (error: unknown) {
-          controller.enqueue(encoder.encode(sseError({
-            ok: false,
-            status: 502,
-            kind: 'server',
-            message: error instanceof Error ? error.message : String(error),
-          })))
-          controller.close()
-        } finally {
-          clearInterval(keepalive)
-          signal?.removeEventListener('abort', onAbort)
-        }
-      },
-    })
-    return {
-      ok: true,
-      response: new Response(stream, {
-        status: 200,
-        headers: {
-          'Content-Type': 'text/event-stream',
-          'Cache-Control': 'no-cache',
-          'X-Accel-Buffering': 'no',
-        },
-      }),
-    }
-  }
-
-  /**
-   * 非流式对话：上游只支持 SSE，由网关聚合为完整 chat.completion。
-   *
-   * @param input 已解析的请求体。
-   * @param model 上游模型 id。
-   * @param signal 调用方中断信号。
-   * @param context 会话上下文。
-   */
-  private async completeChat(
-    input: Record<string, unknown>,
-    model: string,
-    signal: AbortSignal | undefined,
-    context: ChatRequestContext | undefined,
-    meta?: ModelEntry,
-  ): Promise<GatewayChatResult | GatewayChatFailure> {
-    const result = await this.requestUpstream(input, model, signal, meta)
-    if (!result.ok) return result
-    const aggregated = aggregateSse(result.sse, model, context?.sessionId)
-    if (aggregated === undefined) {
-      return { ok: false, status: 502, kind: 'server', message: 'WorkBuddy 上游返回了无法解析的响应' }
-    }
-    return {
-      ok: true,
-      response: new Response(JSON.stringify(aggregated.json), {
-        status: 200,
-        headers: { 'Content-Type': 'application/json' },
-      }),
-      ...aggregated.usage === undefined ? {} : { usage: aggregated.usage },
-    }
-  }
-
-  /**
-   * 请求上游并做路径/连接兜底。
-   *
-   * @param input 已解析的请求体。
-   * @param model 上游模型 id。
-   * @param signal 调用方中断信号。
-   */
-  private async requestUpstream(
-    input: Record<string, unknown>,
-    model: string,
-    signal?: AbortSignal,
-    meta?: ModelEntry,
-  ): Promise<
-    | { ok: true; sse: string }
-    | GatewayChatFailure
-  > {
-    const upstreamBody = buildUpstreamBody(input, meta)
-    const headers = {
-      'content-type': 'application/json',
-      accept: 'text/event-stream',
-    }
-    let upstream: Awaited<ReturnType<WbipcConnection['fetch']>>
+    // 冷启动时上游目录还没拉过，先用本地配置补齐推理档位
+    this.localCatalog()
+    const entry = this.modelMeta.get(model)
+    const normalized = normalizeWorkbuddyRequest(
+      bodyJson,
+      entry?.defaultEffort ?? fallbackEffort(model),
+      context?.sessionId,
+    )
+    let credential: WorkbuddyCredential
     try {
-      upstream = await this.requestWithReconnect(CHAT_PATH, upstreamBody, headers, signal)
-      if (upstream.status !== 200 && isChannelCheck(upstream.body.toString('utf8'))) {
-        this.logger?.('workbuddy channel check, retrying console path', { providerId: this.id })
-        upstream = await this.requestWithReconnect(CONSOLE_CHAT_PATH, upstreamBody, headers, signal)
-      }
+      credential = await this.credentials.ensure(signal)
     } catch (error: unknown) {
-      const message = error instanceof Error ? error.message : String(error)
-      const kind = classifyFailureText(message)
-      return { ok: false, status: kind === 'authentication' ? 401 : 503, kind, message }
-    }
-
-    if (upstream.status !== 200) {
-      const text = upstream.body.toString('utf8')
-      this.logger?.('workbuddy upstream rejected', { providerId: this.id, status: upstream.status, body: text.slice(0, 2048) })
-      const kind = classifyStatus(upstream.status, text)
       return {
         ok: false,
-        status: upstream.status,
-        kind,
-        message: readUpstreamError(text) ?? `WorkBuddy 上游返回 HTTP ${upstream.status}`,
+        status: error instanceof WorkbuddyApiError && error.status === 401 ? 401 : 503,
+        kind: 'authentication',
+        message: error instanceof Error ? error.message : String(error),
       }
     }
-    return { ok: true, sse: upstream.body.toString('utf8') }
+
+    let response = await this.send(credential, normalized, signal)
+    if (response instanceof Error) {
+      return { ok: false, status: 0, kind: 'server', message: response.message }
+    }
+    // access token 可能已被服务端提前作废：强制刷新一次再试
+    if (response.status === 401) {
+      const refreshed = await this.forceRefresh(credential, signal)
+      if (refreshed !== undefined) {
+        await response.body?.cancel().catch(() => undefined)
+        response = await this.send(refreshed, normalized, signal)
+        if (response instanceof Error) {
+          return { ok: false, status: 0, kind: 'server', message: response.message }
+        }
+      }
+    }
+    if (!response.ok) {
+      const text = await response.text().catch(() => '')
+      this.logger?.('workbuddy upstream rejected', {
+        providerId: this.id,
+        status: response.status,
+        body: text.slice(0, 2048),
+      })
+      return {
+        ok: false,
+        status: response.status,
+        kind: classifyStatus(response.status, text),
+        message: readUpstreamError(text) ?? `WorkBuddy 上游返回 HTTP ${response.status}`,
+      }
+    }
+    return {
+      ok: true,
+      response: restoreToolNames(response, normalized.toolNames),
+    }
   }
 
   /** 面向管理台的运行状态。 */
   status(): Promise<unknown> {
-    const endpoint = readWbipcEndpoint(this.configDir)
+    const session = describeCredential(this.credentials.load())
     return Promise.resolve({
-      mode: 'wbipc',
-      configDir: this.configDir,
-      channel: endpoint === undefined ? 'unavailable' : 'ready',
-      connected: this.connection !== undefined,
+      mode: 'direct',
+      endpoint: WORKBUDDY_API,
       models: this.modelCache?.models.length ?? 0,
+      ...session,
     })
   }
 
-  /** 断开与 daemon 的 wbipc 连接。 */
-  close(): void {
-    this.connection?.destroy()
-    this.connection = undefined
-    this.connectionPromise = undefined
+  /** 管理台：当前登录态摘要。 */
+  async sessionStatus(): Promise<ReturnType<typeof describeCredential>> {
+    return describeCredential(this.credentials.load())
+  }
+
+  /** 管理台：发起浏览器登录。 */
+  async startLogin(): Promise<{ url: string }> {
+    const started = await startWorkbuddyLogin()
+    pendingLogins.set(this.id, started.state)
+    return { url: started.url }
+  }
+
+  /** 管理台：轮询一次登录结果。 */
+  async pollLogin(): Promise<{ status: 'pending' | 'done' | 'failed'; accountId?: string; error?: string }> {
+    const state = pendingLogins.get(this.id)
+    if (state === undefined) return { status: 'failed', error: '登录会话已失效，请重新发起登录' }
+    const result = await pollWorkbuddyLogin(state)
+    if (result.status === 'pending') return { status: 'pending' }
+    if (result.status === 'failed') {
+      pendingLogins.delete(this.id)
+      return result
+    }
+    pendingLogins.delete(this.id)
+    this.credentials.save(result.credential)
+    this.modelCache = undefined
+    this.logger?.('workbuddy 登录成功', { providerId: this.id, accountId: result.credential.accountId })
+    return { status: 'done', accountId: result.credential.accountId }
+  }
+
+  /** 管理台：清除登录态。 */
+  async signOut(): Promise<void> {
+    pendingLogins.delete(this.id)
+    this.credentials.clear()
+    this.modelCache = undefined
   }
 
   /**
-   * 发起一次上游请求；连接失效（daemon 重启会换 socket 与 ticket）时重建后重试一次。
+   * 释放资源。
    *
-   * @param path 上游对话路径。
-   * @param body 已构造好的上游请求体。
-   * @param headers 出站 HTTP 头（daemon 只允许 content-type / accept）。
-   * @param signal 中断信号。
+   * 本 provider 没有长连接；`pendingLogins` 是模块级共享的登录会话，
+   * 实例被热替换时不能清掉，否则进行中的登录轮询会失效。
    */
-  private async requestWithReconnect(
-    path: string,
-    body: string,
-    headers: Record<string, string>,
+  close(): void {}
+
+  /** 强制刷新一次登录态，失败时返回 undefined。 */
+  private async forceRefresh(
+    credential: WorkbuddyCredential,
     signal?: AbortSignal,
-  ) {
-    const first = await this.resolveConnection(signal)
+  ): Promise<WorkbuddyCredential | undefined> {
+    if (credential.refresh === undefined || credential.refresh === '') return undefined
     try {
-      return await first.fetch({
+      const next = await this.credentials.saveRefreshed(credential, signal)
+      this.logger?.('workbuddy 收到 401，已强制刷新登录态', { providerId: this.id })
+      return next
+    } catch (error: unknown) {
+      this.logger?.('workbuddy 强制刷新登录态失败', String(error))
+      return undefined
+    }
+  }
+
+  /** 发起一次上游请求；网络错误以 Error 形式返回。 */
+  private async send(
+    credential: WorkbuddyCredential,
+    normalized: NormalizedRequest,
+    signal: AbortSignal | undefined,
+  ): Promise<Response | Error> {
+    const messageId = randomUUID().replaceAll('-', '')
+    const headers = buildWorkbuddyHeaders(credential, {
+      ...normalized.turn.conversationId === undefined ? {} : { conversationId: normalized.turn.conversationId },
+      messageId,
+      requestId: normalized.turn.requestId,
+    })
+    const timeout = this.record.timeoutMs !== undefined && this.record.timeoutMs > 0
+      ? this.record.timeoutMs
+      : DEFAULT_TIMEOUT_MS
+    try {
+      return await fetch(`${WORKBUDDY_API}${CHAT_PATH}`, {
         method: 'POST',
-        path,
         headers,
-        body,
-        ...signal === undefined ? {} : { signal },
+        body: normalized.body,
+        signal: signal ?? AbortSignal.timeout(timeout),
       })
     } catch (error: unknown) {
-      if (signal?.aborted === true) throw error
-      this.logger?.('workbuddy wbipc call failed, reconnecting', { providerId: this.id, error: String(error) })
-      this.close()
-      const retry = await this.resolveConnection(signal)
-      return retry.fetch({
-        method: 'POST',
-        path,
-        headers,
-        body,
-        ...signal === undefined ? {} : { signal },
-      })
+      return new Error(`WorkBuddy 请求失败: ${error instanceof Error ? error.message : String(error)}`)
     }
   }
 
-  /** 复用一条已握手的连接；端点失效时重建。 */
-  private resolveConnection(signal?: AbortSignal): Promise<WbipcConnection> {
-    if (this.connection !== undefined) return Promise.resolve(this.connection)
-    if (this.connectionPromise !== undefined) return this.connectionPromise
-    const endpoint = readWbipcEndpoint(this.configDir)
-    if (endpoint === undefined) {
-      return Promise.reject(new Error(
-        `未找到 WorkBuddy 的本地转发通道（${join(this.configDir, 'wbipc', 'endpoint.json')}），请确认 WorkBuddy 桌面端正在运行`,
-      ))
-    }
-    this.connectionPromise = WbipcConnection.open(endpoint, signal)
-      .then(connection => {
-        this.connection = connection
-        return connection
-      })
-      .finally(() => {
-        this.connectionPromise = undefined
-      })
-    return this.connectionPromise
-  }
-}
-
-/**
- * 构造上游请求体。
- *
- * 上游只支持流式，因此强制 `stream: true` 并要求在末帧返回 usage。
- *
- * 另外部分模型（如 `glm-5.1`）要求请求必须携带 `reasoning_effort`，缺省会被
- * 上游以 11150 拒绝。这里按目录元数据补齐：优先保留调用方的合法取值，其次用
- * 模型声明的默认档位，最后在 `supportedEfforts` 里挑一个。
- */
-function buildUpstreamBody(input: Record<string, unknown>, meta: ModelEntry | undefined): string {
-  const body: Record<string, unknown> = { ...input, stream: UPSTREAM_STREAM }
-  delete body['stream_options']
-  body['stream_options'] = { include_usage: true }
-  const requested = body['reasoning_effort']
-  const efforts = meta?.supportedEfforts ?? []
-  const allowed = typeof requested === 'string' && efforts.includes(requested)
-  if (!allowed) {
-    const fallback = resolveEffort(meta)
-    if (fallback === undefined) delete body['reasoning_effort']
-    else body['reasoning_effort'] = fallback
-  }
-  return JSON.stringify(body)
-}
-
-/** 依据模型元数据挑一个可用的推理档位。 */
-function resolveEffort(meta: ModelEntry | undefined): string | undefined {
-  if (meta === undefined) return undefined
-  const efforts = meta.supportedEfforts ?? []
-  if (meta.defaultEffort !== undefined && (efforts.length === 0 || efforts.includes(meta.defaultEffort))) {
-    return meta.defaultEffort
-  }
-  if (efforts.includes('medium')) return 'medium'
-  return efforts[0]
-}
-
-/**
- * 判断上游是否返回了渠道校验拦截。
- *
- * 该错误码同时承载“内容审核拦截”等其他语义，因此必须同时看到渠道校验文案，
- * 否则会把普通的 4xx 误判成可回落路径。
- *
- * @param text 上游错误响应正文。
- */
-function isChannelCheck(text: string): boolean {
-  const lower = text.toLowerCase()
-  if (!lower.includes('11-128') && !lower.includes('11128')) return false
-  return text.includes('渠道校验') || lower.includes('channel verification') || lower.includes('official client')
-}
-
-/** 把上游失败封装成一段 SSE 错误事件，供已经写出响应头的流式请求收尾。 */
-function sseError(failure: GatewayChatFailure): string {
-  const payload = JSON.stringify({
-    error: {
-      message: failure.message,
-      type: failure.kind,
-      code: failure.kind,
-    },
-  })
-  return `event: error\ndata: ${payload}\n\ndata: [DONE]\n\n`
-}
-
-/** wbipc `http.fetch` 返回体的解析结果。 */
-interface AggregatedSse {
-  json: Record<string, unknown>
-  usage?: { requestTokens?: number; responseTokens?: number; totalTokens?: number }
-}
-
-/**
- * 把上游 OpenAI 兼容 SSE 聚合为一份 chat.completion。
- *
- * 上游拒绝非流式请求（code 11101），所以非流式客户端由网关在本地聚合。
- * 思考内容归入 `reasoning_content`，与上游 delta 的字段保持一致。
- */
-function aggregateSse(sse: string, model: string, sessionId?: string): AggregatedSse | undefined {
-  let content = ''
-  let reasoning = ''
-  let finishReason = 'stop'
-  let id = ''
-  let created = 0
-  let sawChunk = false
-  let promptTokens: number | undefined
-  let completionTokens: number | undefined
-  let totalTokens: number | undefined
-  const toolCalls = new Map<number, { id?: string; name?: string; arguments: string }>()
-
-  for (const line of sse.split('\n')) {
-    if (!line.startsWith('data:')) continue
-    const data = line.slice(5).trim()
-    if (data === '' || data === '[DONE]') continue
-    let event: Record<string, unknown>
+  /** 从上游 /v3/config 读取模型目录。 */
+  private async fetchLiveModels(): Promise<GatewayModel[]> {
+    const credential = this.credentials.load()
+    if (credential === undefined) return []
     try {
-      event = JSON.parse(data) as Record<string, unknown>
-    } catch {
-      continue
-    }
-    sawChunk = true
-    if (typeof event['id'] === 'string') id = event['id']
-    if (typeof event['created'] === 'number') created = event['created']
-    const usage = event['usage']
-    if (typeof usage === 'object' && usage !== null) {
-      const record = usage as Record<string, unknown>
-      if (typeof record['prompt_tokens'] === 'number') promptTokens = record['prompt_tokens']
-      if (typeof record['completion_tokens'] === 'number') completionTokens = record['completion_tokens']
-      if (typeof record['total_tokens'] === 'number') totalTokens = record['total_tokens']
-    }
-    const choices = Array.isArray(event['choices']) ? event['choices'] : []
-    for (const choice of choices) {
-      if (typeof choice !== 'object' || choice === null) continue
-      const record = choice as Record<string, unknown>
-      if (typeof record['finish_reason'] === 'string' && record['finish_reason'] !== '') {
-        finishReason = mapFinishReason(record['finish_reason'])
-      }
-      const delta = record['delta']
-      if (typeof delta !== 'object' || delta === null) continue
-      const deltaRecord = delta as Record<string, unknown>
-      if (typeof deltaRecord['content'] === 'string') content += deltaRecord['content']
-      if (typeof deltaRecord['reasoning_content'] === 'string') reasoning += deltaRecord['reasoning_content']
-      const calls = Array.isArray(deltaRecord['tool_calls']) ? deltaRecord['tool_calls'] : []
-      for (const call of calls) {
-        if (typeof call !== 'object' || call === null) continue
-        const callRecord = call as Record<string, unknown>
-        const index = typeof callRecord['index'] === 'number' ? callRecord['index'] : toolCalls.size
-        const current = toolCalls.get(index) ?? { arguments: '' }
-        if (typeof callRecord['id'] === 'string') current.id = callRecord['id']
-        const fn = callRecord['function']
-        if (typeof fn === 'object' && fn !== null) {
-          const fnRecord = fn as Record<string, unknown>
-          if (typeof fnRecord['name'] === 'string' && fnRecord['name'] !== '') current.name = fnRecord['name']
-          if (typeof fnRecord['arguments'] === 'string') current.arguments += fnRecord['arguments']
-        }
-        toolCalls.set(index, current)
-      }
+      const config = await fetchWorkbuddyConfig(credential)
+      const { models, meta } = parseLiveConfig(config)
+      for (const [id, entry] of meta) this.modelMeta.set(id, entry)
+      return models
+    } catch (error: unknown) {
+      this.logger?.('workbuddy 读取上游模型目录失败', String(error))
+      return []
     }
   }
-  if (!sawChunk) return undefined
 
-  const message: Record<string, unknown> = { role: 'assistant', content }
-  if (reasoning !== '') message['reasoning_content'] = reasoning
-  if (toolCalls.size > 0) {
-    message['tool_calls'] = [...toolCalls.entries()]
-      .sort(([left], [right]) => left - right)
-      .map(([index, call]) => ({
-        index,
-        ...call.id === undefined ? {} : { id: call.id },
-        type: 'function',
-        function: { name: call.name ?? '', arguments: call.arguments },
-      }))
-    if (finishReason === 'stop') finishReason = 'tool_calls'
+  /** 读取桌面端本地配置（带短缓存）。 */
+  private localCatalog(): DesktopCatalog {
+    const cached = this.localCache
+    if (cached !== undefined && Date.now() - cached.at < LOCAL_CACHE_TTL_MS) return cached.catalog
+    const catalog = readDesktopCatalog(this.configDir())
+    for (const entry of catalog.meta.values()) {
+      if (!this.modelMeta.has(entry.id)) this.modelMeta.set(entry.id, entry)
+    }
+    this.localCache = { at: Date.now(), catalog }
+    return catalog
   }
-  const json: Record<string, unknown> = {
-    id: id === '' ? `chatcmpl-${randomUUID().replaceAll('-', '').slice(0, 24)}` : id,
-    object: 'chat.completion',
-    created: created === 0 ? Math.floor(Date.now() / 1000) : created,
-    model,
-    choices: [{ index: 0, message, finish_reason: finishReason }],
-    ...promptTokens === undefined && completionTokens === undefined && totalTokens === undefined
-      ? {}
-      : {
-          usage: {
-            ...promptTokens === undefined ? {} : { prompt_tokens: promptTokens },
-            ...completionTokens === undefined ? {} : { completion_tokens: completionTokens },
-            ...totalTokens === undefined ? {} : { total_tokens: totalTokens },
-          },
-        },
+
+  /** 本地配置里的模型目录（兜底）。 */
+  private localModels(): GatewayModel[] {
+    const catalog = this.localCatalog()
+    return catalog.ids
+      .map(id => catalog.meta.get(id))
+      .filter((entry): entry is ModelEntry => entry !== undefined)
+      .map(toGatewayModel)
   }
+
+  /** provider 的配置目录（兼容旧的 settings.configDir）。 */
+  private configDir(): string {
+    const settings = parseSettings(this.record.settings)
+    return typeof settings['configDir'] === 'string' && settings['configDir'] !== ''
+      ? settings['configDir']
+      : join(homedir(), '.workbuddy')
+  }
+}
+
+/** 登录态默认存放路径。 */
+function defaultCredentialPath(id: string): string {
+  return join(CONFIG_DIR, `workbuddy-${id}.json`)
+}
+
+/** 把上游 /v3/config 转成模型目录与元数据。 */
+function parseLiveConfig(config: Record<string, unknown>): { models: GatewayModel[]; meta: Map<string, ModelEntry> } {
+  const agents = Array.isArray(config['agents']) ? config['agents'] : []
+  const rawModels = Array.isArray(config['models']) ? config['models'] : []
+  const meta = new Map<string, ModelEntry>()
+  for (const raw of rawModels) {
+    const entry = liveModelEntry(raw)
+    if (entry !== undefined) meta.set(entry.id, entry)
+  }
+  const cli = agents.find(agent => typeof agent === 'object' && agent !== null && (agent as Record<string, unknown>)['name'] === 'cli')
+  if (cli === undefined) return { models: [], meta }
+  const ids = Array.isArray((cli as Record<string, unknown>)['models'])
+    ? ((cli as Record<string, unknown>)['models'] as unknown[]).filter((id): id is string => typeof id === 'string' && id !== '')
+    : []
+  return { models: ids.map(id => meta.get(id) ?? { id, name: id }).map(toGatewayModel), meta }
+}
+
+/** 把上游模型定义转成 ModelEntry。 */
+function liveModelEntry(raw: unknown): ModelEntry | undefined {
+  if (typeof raw !== 'object' || raw === null) return undefined
+  const record = raw as Record<string, unknown>
+  const id = typeof record['id'] === 'string' ? record['id'] : ''
+  if (id === '') return undefined
+  const reasoning = typeof record['reasoning'] === 'object' && record['reasoning'] !== null
+    ? record['reasoning'] as Record<string, unknown>
+    : {}
+  const defaultEffort = typeof reasoning['effort'] === 'string' && reasoning['effort'] !== ''
+    ? reasoning['effort']
+    : undefined
+  const contextWindow = typeof record['maxInputTokens'] === 'number' ? record['maxInputTokens'] : undefined
+  const maxTokens = typeof record['maxOutputTokens'] === 'number' ? record['maxOutputTokens'] : undefined
   return {
-    json,
-    ...promptTokens === undefined && completionTokens === undefined && totalTokens === undefined
-      ? {}
-      : {
-          usage: {
-            ...promptTokens === undefined ? {} : { requestTokens: promptTokens },
-            ...completionTokens === undefined ? {} : { responseTokens: completionTokens },
-            ...totalTokens === undefined ? {} : { totalTokens },
-          },
-        },
+    id,
+    name: typeof record['name'] === 'string' && record['name'] !== '' ? record['name'] : id,
+    ...contextWindow === undefined ? {} : { contextWindow },
+    ...maxTokens === undefined ? {} : { maxTokens },
+    ...defaultEffort === undefined ? {} : { defaultEffort },
   }
 }
 
-/** 从 SSE 末帧解析网关用量字段。 */
-function usageFromSse(sse: string): { requestTokens?: number; responseTokens?: number; totalTokens?: number } | undefined {
-  let latest: { requestTokens?: number; responseTokens?: number; totalTokens?: number } | undefined
-  for (const line of sse.split('\n')) {
-    if (!line.startsWith('data:')) continue
-    const data = line.slice(5).trim()
-    if (data === '' || data === '[DONE]') continue
-    try {
-      const event = JSON.parse(data) as Record<string, unknown>
-      const usage = event['usage']
-      if (typeof usage !== 'object' || usage === null) continue
-      const record = usage as Record<string, unknown>
-      latest = {
-        ...typeof record['prompt_tokens'] === 'number' ? { requestTokens: record['prompt_tokens'] } : {},
-        ...typeof record['completion_tokens'] === 'number' ? { responseTokens: record['completion_tokens'] } : {},
-        ...typeof record['total_tokens'] === 'number' ? { totalTokens: record['total_tokens'] } : {},
-      }
-    } catch {
-      // 忽略无法解析的行
-    }
+function toGatewayModel(entry: ModelEntry): GatewayModel {
+  return {
+    id: entry.id,
+    name: entry.name,
+    ...entry.contextWindow === undefined ? {} : { contextWindow: entry.contextWindow },
+    ...entry.maxTokens === undefined ? {} : { maxTokens: entry.maxTokens },
   }
-  return latest
 }
 
-/** 上游 finish_reason → OpenAI finish_reason。 */
-function mapFinishReason(value: string): string {
-  if (value === 'tool_calls' || value === 'tool_use') return 'tool_calls'
-  if (value === 'length' || value === 'max_tokens') return 'length'
-  if (value === 'content_filter') return 'content_filter'
-  return 'stop'
+/** 未知模型时按名字猜一个推理档位（上游对部分模型要求显式指定）。 */
+function fallbackEffort(model: string): string | undefined {
+  for (const [prefix, effort] of Object.entries(FALLBACK_REASONING_MODELS)) {
+    if (model.startsWith(prefix)) return effort
+  }
+  return undefined
 }
 
 /** 从上游错误正文里取出可读信息。 */
@@ -634,6 +447,7 @@ function readUpstreamError(text: string): string | undefined {
   return trimmed === '' ? undefined : trimmed.slice(0, 300)
 }
 
+/** 依据 HTTP 状态与错误正文归类失败原因。 */
 function classifyStatus(status: number, text: string): GatewayChatFailure['kind'] {
   if (status === 401 || status === 403) return 'authentication'
   if (status === 402) return 'hard_credit'
@@ -643,14 +457,6 @@ function classifyStatus(status: number, text: string): GatewayChatFailure['kind'
   if (lower.includes('quota') || lower.includes('credit')) return 'hard_credit'
   if (status >= 500) return 'server'
   return 'client'
-}
-
-/** 依据错误文本推断失败类别（用于连接层失败）。 */
-function classifyFailureText(text: string): GatewayChatFailure['kind'] {
-  // 桌面端没运行 → 本地通道不存在，属于「渠道不可用」而非凭据问题。
-  if (/未找到 WorkBuddy 的本地转发通道|endpoint\.json/.test(text)) return 'unconfigured'
-  if (/authentication|not logged in|unauthori[sz]ed|登录/i.test(text)) return 'authentication'
-  return 'server'
 }
 
 /** 解析 provider 的 settings。 */
@@ -669,32 +475,29 @@ function parseSettings(value: string): Record<string, unknown> {
 /**
  * 读取桌面端的产品配置，得到「软件里可选的模型」。
  *
- * CLI/桌面端会把服务端下发的运行时配置写进 `local_storage/*.info`，其中
- * `agents[name=cli].models` 就是客户端模型下拉框的数据源；`models[]` 则带有
- * 上下文窗口与受支持的推理档位。两者合并后即为本渠道暴露的目录。
+ * 桌面端会把服务端下发的运行时配置写进 `local_storage/*.info`，其中
+ * `agents[name=cli].models` 就是客户端模型下拉框的数据源；`models[]` 带有
+ * 上下文窗口与推理档位。这条路径不需要登录态，作为上游目录的兜底。
  *
  * @param configDir WorkBuddy 配置目录（如 `~/.workbuddy`）。
  */
 function readDesktopCatalog(configDir: string): DesktopCatalog {
   const meta = new Map<string, ModelEntry>()
-  const dirs = [join(configDir, 'local_storage')]
-  for (const dir of dirs) {
-    for (const data of collectConfigData(dir)) {
-      const models = Array.isArray(data['models']) ? data['models'] : []
-      for (const raw of models) {
-        const entry = modelEntry(raw)
-        if (entry !== undefined) meta.set(entry.id, entry)
-      }
-      const agents = Array.isArray(data['agents']) ? data['agents'] : []
-      for (const raw of agents) {
-        if (typeof raw !== 'object' || raw === null) continue
-        const agent = raw as Record<string, unknown>
-        if (agent['name'] !== 'cli') continue
-        const ids = Array.isArray(agent['models'])
-          ? agent['models'].filter((id): id is string => typeof id === 'string' && id !== '')
-          : []
-        if (ids.length > 0) return { ids, meta }
-      }
+  for (const data of collectConfigData(join(configDir, 'local_storage'))) {
+    const models = Array.isArray(data['models']) ? data['models'] : []
+    for (const raw of models) {
+      const entry = desktopModelEntry(raw)
+      if (entry !== undefined) meta.set(entry.id, entry)
+    }
+    const agents = Array.isArray(data['agents']) ? data['agents'] : []
+    for (const raw of agents) {
+      if (typeof raw !== 'object' || raw === null) continue
+      const agent = raw as Record<string, unknown>
+      if (agent['name'] !== 'cli') continue
+      const ids = Array.isArray(agent['models'])
+        ? agent['models'].filter((id): id is string => typeof id === 'string' && id !== '')
+        : []
+      if (ids.length > 0) return { ids, meta }
     }
   }
   return { ids: [], meta }
@@ -737,8 +540,8 @@ function collectConfigData(dir: string): Array<Record<string, unknown>> {
   return result
 }
 
-/** 把产品配置里的一条模型定义转为 ModelEntry。 */
-function modelEntry(raw: unknown): ModelEntry | undefined {
+/** 把桌面配置里的一条模型定义转为 ModelEntry。 */
+function desktopModelEntry(raw: unknown): ModelEntry | undefined {
   if (typeof raw !== 'object' || raw === null) return undefined
   const record = raw as Record<string, unknown>
   const id = typeof record['id'] === 'string' ? record['id'] : ''
@@ -746,13 +549,9 @@ function modelEntry(raw: unknown): ModelEntry | undefined {
   const reasoning = typeof record['reasoning'] === 'object' && record['reasoning'] !== null
     ? record['reasoning'] as Record<string, unknown>
     : {}
-  const efforts = Array.isArray(reasoning['supportedEfforts'])
-    ? reasoning['supportedEfforts'].filter((value): value is string => typeof value === 'string' && value !== '')
+  const defaultEffort = typeof reasoning['effort'] === 'string' && reasoning['effort'] !== ''
+    ? reasoning['effort']
     : undefined
-  // 有些模型只声明固定档位（如 glm-5.1 的 effort: "medium"），没有 supportedEfforts。
-  const defaultEffort = typeof reasoning['defaultEffort'] === 'string' && reasoning['defaultEffort'] !== ''
-    ? reasoning['defaultEffort']
-    : typeof reasoning['effort'] === 'string' && reasoning['effort'] !== '' ? reasoning['effort'] : undefined
   const contextWindow = typeof record['maxInputTokens'] === 'number' ? record['maxInputTokens'] : undefined
   const maxTokens = typeof record['maxOutputTokens'] === 'number' ? record['maxOutputTokens'] : undefined
   return {
@@ -760,7 +559,6 @@ function modelEntry(raw: unknown): ModelEntry | undefined {
     name: typeof record['name'] === 'string' && record['name'] !== '' ? record['name'] : id,
     ...contextWindow === undefined ? {} : { contextWindow },
     ...maxTokens === undefined ? {} : { maxTokens },
-    ...efforts === undefined || efforts.length === 0 ? {} : { supportedEfforts: efforts },
     ...defaultEffort === undefined ? {} : { defaultEffort },
   }
 }

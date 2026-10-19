@@ -7,6 +7,7 @@ import { api } from '../api.ts'
 import { ChannelForm } from '../components/ChannelForm.tsx'
 import { PageActions, Spinner } from '../components/common.tsx'
 import { ProviderToggle } from '../components/ProviderToggle.tsx'
+import { WorkbuddyLoginPanel } from '../components/WorkbuddyLoginPanel.tsx'
 import { providerEnabledPatch } from '../constants/providers.ts'
 import { useAsync } from '../hooks/useAsync.ts'
 import { navigate } from '../routes.ts'
@@ -147,6 +148,14 @@ export function ChannelDetailPage({ id, onBack, onDeleted }: {
             onCancel={() => { navigate('providers'); onBack() }}
             onSaved={() => { void refresh(); reload() }}
           />
+          {provider.type === 'workbuddy' && (
+            <Card className="page-card" title="WorkBuddy 登录">
+              <WorkbuddyLoginPanel
+                providerId={provider.id}
+                onSignedIn={() => { void refresh(); reload() }}
+              />
+            </Card>
+          )}
           <Card className="page-card" title="已开启模型">
             {refreshing && previewModels.length === 0 ? (
               <Spinner label="正在获取全部模型" />

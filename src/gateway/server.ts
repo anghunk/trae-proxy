@@ -26,7 +26,7 @@ import {
   revokeSession,
   verifyPassword,
 } from './auth.ts'
-import { isValidProviderId, upsertProviderInstance } from './factory.ts'
+import { createProvider, isValidProviderId, upsertProviderInstance } from './factory.ts'
 import { ProviderProbeRunner, type ProbeOutcome } from './probe.ts'
 import { ProviderRegistry, refreshProviderModels, type GatewayModel } from './providers.ts'
 import { DEFAULT_DB_PATH, type ProbeLevel, type ProviderRecord, type ProviderType } from './store.ts'
@@ -560,6 +560,24 @@ export function createGatewayServer(options: GatewayServerOptions): GatewayServe
 
   function clearLoginFailures(client: string): void {
     loginFailures.delete(client)
+  }
+
+  /**
+   * 取指定渠道的 WorkBuddy 登录态管理接口。
+   *
+   * 只有已注册的 `workbuddy` 类型 provider 才提供；未启用时也会临时实例化，
+   * 让用户可以先登录再开启渠道。
+   */
+  function workbuddySession(id: string): import('./providers/workbuddy.ts').WorkbuddySessionApi | undefined {
+    const provider = registry.get(id)
+    if (provider !== undefined && typeof (provider as Partial<import('./providers/workbuddy.ts').WorkbuddySessionApi>).startLogin === 'function') {
+      return provider as unknown as import('./providers/workbuddy.ts').WorkbuddySessionApi
+    }
+    const record = store.getProvider(id)
+    if (record === undefined || record.type !== 'workbuddy') return undefined
+    const instance = createProvider(record, { logger: (message, detail) => logger.warn(message, detail) })
+    if (record.enabled) registry.register(instance)
+    return instance as unknown as import('./providers/workbuddy.ts').WorkbuddySessionApi
   }
 
   function clientIp(req: IncomingMessage): string {
@@ -1994,6 +2012,66 @@ export function createGatewayServer(options: GatewayServerOptions): GatewayServe
       store.deleteProvider(id)
       await reloadProviders()
       writeJson(res, 200, { ok: true })
+      return
+    }
+    // WorkBuddy 渠道的登录态管理：走官方浏览器 OAuth，凭据只落本地文件。
+    if (req.method === 'POST' && /^\/api\/providers\/[^/]+\/workbuddy\/login$/.test(path)) {
+      const id = decodeURIComponent(path.slice('/api/providers/'.length, -'/workbuddy/login'.length))
+      const session = workbuddySession(id)
+      if (session === undefined) {
+        writeError(res, 404, `渠道不存在或不是 WorkBuddy 类型: ${id}`, 'provider_not_found')
+        return
+      }
+      try {
+        writeJson(res, 200, { ok: true, ...(await session.startLogin()) })
+      } catch (error: unknown) {
+        writeError(res, 502, error instanceof Error ? error.message : String(error), 'login_failed')
+      }
+      return
+    }
+    if (req.method === 'GET' && /^\/api\/providers\/[^/]+\/workbuddy\/login$/.test(path)) {
+      const id = decodeURIComponent(path.slice('/api/providers/'.length, -'/workbuddy/login'.length))
+      const session = workbuddySession(id)
+      if (session === undefined) {
+        writeError(res, 404, `渠道不存在或不是 WorkBuddy 类型: ${id}`, 'provider_not_found')
+        return
+      }
+      try {
+        const result = await session.pollLogin()
+        if (result.status === 'done') {
+          // 登录态变了，模型目录需要重新拉取
+          const record = store.getProvider(id)
+          if (record !== undefined && record.enabled) {
+            await reloadProviders()
+            await registry.refreshModels(id).catch(() => undefined)
+          }
+        }
+        writeJson(res, 200, { ok: result.status !== 'failed', ...result })
+      } catch (error: unknown) {
+        writeError(res, 502, error instanceof Error ? error.message : String(error), 'login_failed')
+      }
+      return
+    }
+    if (req.method === 'DELETE' && /^\/api\/providers\/[^/]+\/workbuddy\/login$/.test(path)) {
+      const id = decodeURIComponent(path.slice('/api/providers/'.length, -'/workbuddy/login'.length))
+      const session = workbuddySession(id)
+      if (session === undefined) {
+        writeError(res, 404, `渠道不存在或不是 WorkBuddy 类型: ${id}`, 'provider_not_found')
+        return
+      }
+      await session.signOut()
+      await reloadProviders()
+      writeJson(res, 200, { ok: true })
+      return
+    }
+    if (req.method === 'GET' && /^\/api\/providers\/[^/]+\/workbuddy\/session$/.test(path)) {
+      const id = decodeURIComponent(path.slice('/api/providers/'.length, -'/workbuddy/session'.length))
+      const session = workbuddySession(id)
+      if (session === undefined) {
+        writeError(res, 404, `渠道不存在或不是 WorkBuddy 类型: ${id}`, 'provider_not_found')
+        return
+      }
+      writeJson(res, 200, { ok: true, ...(await session.sessionStatus()) })
       return
     }
     if (req.method === 'POST' && /^\/api\/providers\/[^/]+\/refresh$/.test(path)) {

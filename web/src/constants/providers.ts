@@ -19,7 +19,7 @@ export const TYPE_HINT: Record<Provider['type'], string> = {
   anthropic: 'Anthropic Messages API',
   gemini: 'Google Gemini API',
   ollama: '本地 Ollama（未运行时自动调用 CLI）',
-  workbuddy: '本机 WorkBuddy（经桌面端本地通道反代，无需 API Key）',
+  workbuddy: '复用 WorkBuddy 登录态，直连官方接口做流式转发',
 }
 
 export const TYPE_DEFAULT: Record<Provider['type'], { baseUrl: string; needsKey: boolean; models: string[] }> = {
@@ -51,7 +51,7 @@ export const OFFICIAL_PRESETS: OfficialPreset[] = [
   { id: 'anthropic', name: 'Anthropic 官方', type: 'anthropic', baseUrl: 'https://api.anthropic.com', needsKey: true, hint: 'Claude 系列' },
   { id: 'gemini', name: 'Google Gemini', type: 'gemini', baseUrl: 'https://generativelanguage.googleapis.com', needsKey: true, hint: 'Gemini 系列' },
   { id: 'ollama', name: '本地 Ollama', type: 'ollama', baseUrl: 'http://127.0.0.1:11434/v1', needsKey: false, hint: '自动调用本机 CLI' },
-  { id: 'workbuddy', name: '本机 WorkBuddy', type: 'workbuddy', baseUrl: '', needsKey: false, hint: '复用桌面端登录态，无需 API Key' },
+  { id: 'workbuddy', name: '本机 WorkBuddy', type: 'workbuddy', baseUrl: '', needsKey: false, hint: '复用 WorkBuddy 登录态，无需 API Key' },
 ]
 
 /**

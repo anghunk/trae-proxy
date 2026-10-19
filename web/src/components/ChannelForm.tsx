@@ -110,7 +110,7 @@ export function ChannelForm({
     if (!/^[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?$/.test(id)) return '渠道 ID 仅允许小写字母、数字和连字符（1-32 位）'
     if (name.trim() === '') return '请填写渠道名称'
     if (type !== 'trae-cn' && type !== 'trae-ai') {
-      // trae 与 workbuddy 不需要手填 Base URL：前者读本地登录态，后者复用桌面端本地通道。
+      // trae 与 workbuddy 不需要手填 Base URL：前者读本地登录态，后者直连官方接口。
       if (baseUrl.trim() === '') {
         if (type !== 'workbuddy') return '请填写 Base URL'
       } else if (!/^https?:\/\//.test(baseUrl.trim())) {
@@ -255,8 +255,8 @@ export function ChannelForm({
                       <Alert
                         type="info"
                         showIcon
-                        message="无需填写凭据"
-                        description="网关通过 WorkBuddy 桌面端的本地通道转发，由其自动带上登录态。请保持 WorkBuddy 处于运行且已登录状态。"
+                        message="保存后到详情页完成一次登录"
+                        description="WorkBuddy 桌面端把凭据加密落盘，外部进程读不出来；请保存本渠道后在详情页点「登录 WorkBuddy」，完成一次浏览器授权即可（也可自动导入本机其它客户端的登录态）。"
                       />
                     </Col>
                   ) : (
