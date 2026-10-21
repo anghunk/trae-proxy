@@ -4,8 +4,7 @@ import { useEffect, useState } from 'react'
 import { Layout, Typography } from 'antd'
 import { api } from '../api.ts'
 import { useAsync } from '../hooks/useAsync.ts'
-import { ChannelDetailPage } from '../pages/ChannelDetailPage.tsx'
-import { ChannelsPage } from '../pages/ChannelsPage.tsx'
+import { ChannelsWorkspacePage } from '../pages/ChannelsWorkspacePage.tsx'
 import { GatewaySettingsPage } from '../pages/GatewaySettingsPage.tsx'
 import { KeysPage } from '../pages/KeysPage.tsx'
 import { OverviewPage } from '../pages/OverviewPage.tsx'
@@ -23,7 +22,11 @@ export function Shell({ theme, onToggleTheme }: {
   theme: Theme
   onToggleTheme: () => void
 }) {
-  const [view, setView] = useState<View>(viewFromPath)
+  const [route, setRoute] = useState<{ view: View; pathname: string }>(() => ({
+    view: viewFromPath(),
+    pathname: window.location.pathname,
+  }))
+  const view = route.view
   const providers = useAsync(() => api.providers(), [])
   const dashboard = useAsync(() => api.dashboard(), [])
   const logout = async (): Promise<void> => {
@@ -31,39 +34,43 @@ export function Shell({ theme, onToggleTheme }: {
     window.location.reload()
   }
   useEffect(() => {
-    const onPopState = (): void => setView(viewFromPath())
+    const onPopState = (): void => {
+      setRoute({ view: viewFromPath(), pathname: window.location.pathname })
+    }
     window.addEventListener('popstate', onPopState)
     return () => window.removeEventListener('popstate', onPopState)
   }, [])
 
   const openDetail = (id: string): void => {
     navigate('provider-detail', id)
-    setView('provider-detail')
+    setRoute({ view: 'provider-detail', pathname: window.location.pathname })
   }
-  const backToProviders = (): void => {
+  const showProviders = (): void => {
     navigate('providers')
-    setView('providers')
+    setRoute({ view: 'providers', pathname: window.location.pathname })
   }
   const providerId = view === 'provider-detail'
-    ? decodeURIComponent(window.location.pathname.slice('/providers/'.length).replace(/\/$/, ''))
+    ? decodeURIComponent(route.pathname.slice('/providers/'.length).replace(/\/$/, ''))
     : undefined
 
   const topbarTitle = view === 'overview' ? '概览'
-    : view === 'providers' ? '渠道'
+    : view === 'providers' ? '渠道工作台'
     : view === 'status' ? '渠道状态'
     : view === 'keys' ? 'API Keys'
     : view === 'usage' ? '用量'
     : view === 'logs' ? '使用日志'
     : view === 'settings-password' ? '设置'
     : view === 'settings-gateway' ? '设置'
-    : '渠道详情'
+    : '渠道工作台'
   const endpointUrl = `http://127.0.0.1:${window.location.port || '39310'}/v1`
 
   return (
     <Layout className="shell">
       <Sidebar
         view={view}
-        onView={setView}
+        onView={next => {
+          setRoute({ view: next, pathname: window.location.pathname })
+        }}
         theme={theme}
         onToggleTheme={onToggleTheme}
         onLogout={() => { void logout() }}
@@ -84,11 +91,14 @@ export function Shell({ theme, onToggleTheme }: {
               }}
             />
           )}
-          {view === 'providers' && <ChannelsPage onOpenDetail={openDetail} />}
-          {view === 'status' && <StatusPage />}
-          {view === 'provider-detail' && providerId !== undefined && (
-            <ChannelDetailPage id={providerId} onBack={backToProviders} onDeleted={backToProviders} />
+          {(view === 'providers' || view === 'provider-detail') && (
+            <ChannelsWorkspacePage
+              selectedId={providerId}
+              onSelect={openDetail}
+              onClear={showProviders}
+            />
           )}
+          {view === 'status' && <StatusPage />}
           {view === 'keys' && <KeysPage />}
           {view === 'usage' && <UsagePage />}
           {view === 'logs' && <UsageLogsPage />}

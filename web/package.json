@@ -10,6 +10,7 @@
   },
   "dependencies": {
     "@ant-design/icons": "^6.3.4",
+    "@lobehub/icons-static-svg": "^1.95.1",
     "antd": "^6.6.5",
     "dayjs": "^1.11.23",
     "react": "^19.3.0",
