@@ -36,7 +36,6 @@ import {
   TYPE_HINT,
   TYPE_LABEL,
 } from '../constants/providers.ts'
-import { WorkbuddyLoginPanel } from './WorkbuddyLoginPanel.tsx'
 import { ChatgptLoginPanel } from './ChatgptLoginPanel.tsx'
 import { Field } from './common.tsx'
 import { ProviderToggle } from './ProviderToggle.tsx'
@@ -56,7 +55,7 @@ function usesEndpoint(type: Provider['type']): boolean {
 
 /** 判断渠道是否通过浏览器 OAuth 建立连接。 */
 function usesBrowserLogin(type: Provider['type']): boolean {
-  return type === 'workbuddy' || type === 'chatgpt-oauth'
+  return type === 'chatgpt-oauth'
 }
 
 export function ChannelEditor({
@@ -372,7 +371,7 @@ export function ChannelEditor({
               <section className="channel-editor-section">
                 <div className="channel-section-heading">
                   <div>
-                    <Text strong>{type === 'workbuddy' ? 'WorkBuddy 登录' : 'ChatGPT 订阅授权'}</Text>
+                    <Text strong>ChatGPT 订阅授权</Text>
                     <Text type="secondary">
                       {isEdit ? '连接状态可以单独刷新，不影响其他渠道。' : '先保存渠道，再在这里完成浏览器授权。'}
                     </Text>
@@ -381,15 +380,6 @@ export function ChannelEditor({
                     {isEdit ? '可配置' : '等待保存'}
                   </Tag>
                 </div>
-                {isEdit && type === 'workbuddy' && (
-                  <WorkbuddyLoginPanel
-                    providerId={initial.id}
-                    onSignedIn={() => {
-                      onChanged?.()
-                      void loadModels()
-                    }}
-                  />
-                )}
                 {isEdit && type === 'chatgpt-oauth' && (
                   <ChatgptLoginPanel
                     providerId={initial.id}

@@ -9,7 +9,6 @@ export const TYPE_LABEL: Record<Provider['type'], string> = {
   anthropic: 'Anthropic',
   gemini: 'Gemini',
   ollama: 'Ollama',
-  workbuddy: 'WorkBuddy',
   'chatgpt-oauth': 'ChatGPT 订阅',
 }
 
@@ -20,7 +19,6 @@ export const TYPE_HINT: Record<Provider['type'], string> = {
   anthropic: 'Anthropic Messages API',
   gemini: 'Google Gemini API',
   ollama: '本地 Ollama（未运行时自动调用 CLI）',
-  workbuddy: '复用 WorkBuddy 登录态，直连官方接口做流式转发',
   'chatgpt-oauth': '通过官方 OAuth 使用 ChatGPT Plus / Pro / Business 订阅额度',
 }
 
@@ -31,7 +29,6 @@ export const TYPE_DEFAULT: Record<Provider['type'], { baseUrl: string; needsKey:
   anthropic: { baseUrl: 'https://api.anthropic.com', needsKey: true, models: ['claude-3-5-sonnet-latest'] },
   gemini: { baseUrl: 'https://generativelanguage.googleapis.com', needsKey: true, models: ['gemini-1.5-flash'] },
   ollama: { baseUrl: 'http://127.0.0.1:11434/v1', needsKey: false, models: ['llama3.1'] },
-  workbuddy: { baseUrl: '', needsKey: false, models: [] },
   'chatgpt-oauth': { baseUrl: '', needsKey: false, models: [] },
 }
 
@@ -54,7 +51,6 @@ export const OFFICIAL_PRESETS: OfficialPreset[] = [
   { id: 'anthropic', name: 'Anthropic 官方', type: 'anthropic', baseUrl: 'https://api.anthropic.com', needsKey: true, hint: 'Claude 系列' },
   { id: 'gemini', name: 'Google Gemini', type: 'gemini', baseUrl: 'https://generativelanguage.googleapis.com', needsKey: true, hint: 'Gemini 系列' },
   { id: 'ollama', name: '本地 Ollama', type: 'ollama', baseUrl: 'http://127.0.0.1:11434/v1', needsKey: false, hint: '自动调用本机 CLI' },
-  { id: 'workbuddy', name: '本机 WorkBuddy', type: 'workbuddy', baseUrl: '', needsKey: false, hint: '复用 WorkBuddy 登录态，无需 API Key' },
   { id: 'chatgpt-oauth', name: 'ChatGPT 订阅', type: 'chatgpt-oauth', baseUrl: '', needsKey: false, hint: 'Plus / Pro / Business 套餐额度' },
 ]
 

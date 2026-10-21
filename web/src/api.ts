@@ -9,7 +9,7 @@ export interface AdminSession {
 
 export interface Provider {
   id: string
-  type: 'trae-cn' | 'trae-ai' | 'openai' | 'anthropic' | 'gemini' | 'ollama' | 'workbuddy' | 'chatgpt-oauth'
+  type: 'trae-cn' | 'trae-ai' | 'openai' | 'anthropic' | 'gemini' | 'ollama' | 'chatgpt-oauth'
   name: string
   enabled: boolean
   baseUrl?: string
@@ -101,31 +101,6 @@ export interface CcSwitchFillResult {
   instruction: string
   modelCount?: number
   models?: string[]
-}
-
-/** WorkBuddy 渠道的登录态摘要。 */
-export interface WorkbuddySession {
-  signedIn: boolean
-  accountId?: string
-  uid?: string
-  source?: string
-  expiresAt?: number
-  refreshable: boolean
-  expired: boolean
-}
-
-/** 发起浏览器登录的结果。 */
-export interface WorkbuddyLoginStart {
-  ok: boolean
-  url: string
-}
-
-/** 轮询浏览器登录的结果。 */
-export interface WorkbuddyLoginPoll {
-  ok: boolean
-  status: 'pending' | 'done' | 'failed'
-  accountId?: string
-  error?: string
 }
 
 /** ChatGPT 订阅渠道的登录态摘要。 */
@@ -293,14 +268,6 @@ export const api = {
     request<{ ok: boolean; count: number; models: string[] }>(`/api/providers/${encodeURIComponent(id)}/refresh`, { method: 'POST' }),
   testProvider: (body: Partial<Provider>) =>
     request<{ ok: boolean; count: number; models: string[] }>('/api/providers/test', { method: 'POST', body: JSON.stringify(body) }),
-  workbuddySession: (id: string) =>
-    request<WorkbuddySession>(`/api/providers/${encodeURIComponent(id)}/workbuddy/session`),
-  workbuddyStartLogin: (id: string) =>
-    request<WorkbuddyLoginStart>(`/api/providers/${encodeURIComponent(id)}/workbuddy/login`, { method: 'POST' }),
-  workbuddyPollLogin: (id: string) =>
-    request<WorkbuddyLoginPoll>(`/api/providers/${encodeURIComponent(id)}/workbuddy/login`),
-  workbuddySignOut: (id: string) =>
-    request<{ ok: boolean }>(`/api/providers/${encodeURIComponent(id)}/workbuddy/login`, { method: 'DELETE' }),
   chatgptSession: (id: string) =>
     request<ChatgptSession>(`/api/providers/${encodeURIComponent(id)}/chatgpt-oauth/session`),
   chatgptStartLogin: (id: string) =>

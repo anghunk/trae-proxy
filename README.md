@@ -76,7 +76,6 @@ curl http://127.0.0.1:39310/v1/chat/completions \
 | `anthropic` | Anthropic Messages API |
 | `gemini` | Google Gemini API |
 | `ollama` | 本地 Ollama，服务未运行时自动调用本机 CLI |
-| `workbuddy` | 复用 WorkBuddy 登录态，直连官方接口做流式转发 |
 | `chatgpt-oauth` | 官方 OAuth 使用 ChatGPT Plus / Pro / Business 套餐额度 |
 
 > 上游 API key 明文存于本地 SQLite；管理员密码与网关 API key 只存哈希。
@@ -100,43 +99,6 @@ TRAE_PROXY_KEY=tr-xxxxxxxx node scripts/inject-config.cjs
 | `TRAE_PROXY_USAGE_RETENTION_DAYS` | `180` | 用量明细保留天数，`0` 表示永久保留 |
 | `TRAE_PROXY_PROBE_INTERVAL_MINUTES` | `15` | 渠道主动探活间隔（分钟），`0` 表示关闭 |
 | `OLLAMA_BIN` | 自动探测 | `ollama` CLI 可执行文件路径 |
-
-### WorkBuddy 渠道
-
-WorkBuddy 不提供 API Key；桌面端 5.6 起还把登录凭据以 `$wbEncrypted` 信封加密落盘，
-密钥在系统钥匙串里，外部进程读不出来。桌面端 daemon 虽然开放了一条本地转发通道，
-但它是 call 型 RPC，宿主硬编码 **50 秒超时**且协议 v1 没有任何 stream 方法——
-这也是此前本机代理“长回答必断”的根因。
-
-因此本渠道改用 WorkBuddy 官方（浏览器）OAuth：在管理台完成一次授权，网关保存
-token 后直连 `https://copilot.tencent.com/v2` 做真正的 SSE 流式转发：
-
-```
-OpenAI /v1/chat/completions
-  → 网关按 WorkBuddy 客户端协议补齐请求头与请求体
-    → https://copilot.tencent.com/v2/chat/completions（真流式，无 50s 限制）
-```
-
-首次使用：新增 `workbuddy` 渠道 → 保存 → 在渠道详情页点「登录 WorkBuddy」，
-浏览器里完成腾讯登录页授权即可。登录态、access token 到期时间与来源会显示在
-该面板，过期前会自动刷新。
-
-如果本机已经用 magpie / OpenCode 登录过 WorkBuddy，网关会**自动导入**它保存的
-access token 作为兜底（刻意不取一次性的 refresh token，避免把对方挤下线）；
-导入的登录态不能自动续期，面板会明确提示。
-
-请求体兼容层与参考实现一致：强制 `stream: true`、`max_completion_tokens` →
-`max_tokens`、`developer` → `system`、工具名安全化与回写、JSON Schema 修补
-（`enum` 补类型、根 schema 归一到 object）、以及规避上游对 Codex / Claude Code
-提示词的渠道校验。
-
-**模型清单与客户端保持一致**：登录后目录来自上游 `GET /v3/config` 的
-`agents[cli].models`，即 WorkBuddy 客户端模型下拉框的数据源；未登录时退回桌面端
-缓存的运行时产品配置（`~/.workbuddy/local_storage/`）。默认暴露该账号全部可选模型；
-若只想开放其中几个，在渠道的「模型映射」里勾选即可。
-
-可用 `settings.credentialPath` 覆盖登录态文件路径（默认 `config/workbuddy-<id>.json`），
-`settings.configDir` 覆盖桌面端配置目录（默认 `~/.workbuddy`）。
 
 ### ChatGPT 订阅渠道
 
@@ -181,7 +143,4 @@ OAuth access token 有效期约 1 小时，refresh token 有效期约 30 天并�
 | `403` | key 的可访问范围未包含目标 provider |
 | `404` 模型未知 | 模型 id 需带前缀，如 `trae-cn/glm-5.3` |
 | Ollama 模型为空 | 安装 `ollama` CLI 并执行 `ollama pull <model>`；网关会自动探测常见安装位置 |
-| WorkBuddy 报 `authentication` | 登录态缺失或已失效；到渠道详情页点「登录 WorkBuddy」重新授权 |
-| WorkBuddy 一直“未登录” | 管理台详情页的登录面板会显示原因；点击登录后需在浏览器完成授权 |
-| WorkBuddy 模型为空 | 先在详情页完成登录，再点「刷新模型」 |
 | 前端空白 | 先 `npm run build` 再访问管理台 |

@@ -26,7 +26,6 @@ import {
   SearchOutlined,
 } from '@ant-design/icons'
 import anthropicIcon from '@lobehub/icons-static-svg/icons/anthropic.svg?url'
-import codeBuddyIcon from '@lobehub/icons-static-svg/icons/codebuddy.svg?url'
 import deepSeekIcon from '@lobehub/icons-static-svg/icons/deepseek.svg?url'
 import geminiIcon from '@lobehub/icons-static-svg/icons/gemini.svg?url'
 import kimiIcon from '@lobehub/icons-static-svg/icons/kimi.svg?url'
@@ -54,7 +53,6 @@ type ProviderBrand =
   | 'anthropic'
   | 'gemini'
   | 'ollama'
-  | 'codebuddy'
   | 'deepseek'
   | 'openrouter'
   | 'zhipu'
@@ -69,7 +67,6 @@ const BRAND_TONE: Record<ProviderBrand, string> = {
   anthropic: '#c15f3c',
   gemini: '#4285f4',
   ollama: '#4b5563',
-  codebuddy: '#6c4dff',
   deepseek: '#4d6bfe',
   openrouter: '#7aa600',
   zhipu: '#3859ff',
@@ -85,7 +82,6 @@ const BRAND_ICON: Record<ProviderBrand, string> = {
   anthropic: anthropicIcon,
   gemini: geminiIcon,
   ollama: ollamaIcon,
-  codebuddy: codeBuddyIcon,
   deepseek: deepSeekIcon,
   openrouter: openRouterIcon,
   zhipu: zhipuIcon,
@@ -107,7 +103,6 @@ function providerBrand(provider?: Pick<Provider, 'type' | 'id' | 'name' | 'baseU
   if (type === 'anthropic') return 'anthropic'
   if (type === 'gemini') return 'gemini'
   if (type === 'ollama') return 'ollama'
-  if (type === 'workbuddy') return 'codebuddy'
   if (type === 'chatgpt-oauth') return 'openai'
   if (type !== 'openai') return 'generic'
 

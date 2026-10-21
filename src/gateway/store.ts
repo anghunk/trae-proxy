@@ -23,7 +23,6 @@ export type ProviderType =
   | 'anthropic'
   | 'gemini'
   | 'ollama'
-  | 'workbuddy'
   | 'chatgpt-oauth'
 
 export interface ProviderRecord {
@@ -225,6 +224,8 @@ export class GatewayStore {
     if (!apiKeyColumns.some(column => column.name === 'key')) {
       this.db.exec(`ALTER TABLE api_keys ADD COLUMN key TEXT NOT NULL DEFAULT ''`)
     }
+    // WorkBuddy 已不再是受支持的渠道类型，启动时清除旧配置。
+    this.db.prepare(`DELETE FROM providers WHERE type = 'workbuddy'`).run()
   }
 
   getSetting(key: string): string | undefined {
