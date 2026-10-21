@@ -24,6 +24,7 @@ export type ProviderType =
   | 'gemini'
   | 'ollama'
   | 'workbuddy'
+  | 'chatgpt-oauth'
 
 export interface ProviderRecord {
   id: string

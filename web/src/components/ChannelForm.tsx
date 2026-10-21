@@ -110,9 +110,9 @@ export function ChannelForm({
     if (!/^[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?$/.test(id)) return '渠道 ID 仅允许小写字母、数字和连字符（1-32 位）'
     if (name.trim() === '') return '请填写渠道名称'
     if (type !== 'trae-cn' && type !== 'trae-ai') {
-      // trae 与 workbuddy 不需要手填 Base URL：前者读本地登录态，后者直连官方接口。
+      // 本地登录态与官方 OAuth 渠道不需要手填 Base URL。
       if (baseUrl.trim() === '') {
-        if (type !== 'workbuddy') return '请填写 Base URL'
+        if (type !== 'workbuddy' && type !== 'chatgpt-oauth') return '请填写 Base URL'
       } else if (!/^https?:\/\//.test(baseUrl.trim())) {
         return 'Base URL 需要以 http:// 或 https:// 开头'
       }
@@ -241,9 +241,9 @@ export function ChannelForm({
                 <ProviderToggle enabled={enabled} onChange={setEnabled} />
               </Field>
               </Col>
-              {(type === 'openai' || type === 'anthropic' || type === 'gemini' || type === 'ollama' || type === 'workbuddy') && (
+              {(type === 'openai' || type === 'anthropic' || type === 'gemini' || type === 'ollama' || type === 'workbuddy' || type === 'chatgpt-oauth') && (
                 <>
-                  {type !== 'workbuddy' && (
+                  {type !== 'workbuddy' && type !== 'chatgpt-oauth' && (
                     <Col xs={24} md={12}>
                       <Field label="Base URL" hint={TYPE_HINT[type]}>
                         <Input value={baseUrl} onChange={event => setBaseUrl(event.target.value)} placeholder="https://..." />
@@ -257,6 +257,15 @@ export function ChannelForm({
                         showIcon
                         message="保存后到详情页完成一次登录"
                         description="WorkBuddy 桌面端把凭据加密落盘，外部进程读不出来；请保存本渠道后在详情页点「登录 WorkBuddy」，完成一次浏览器授权即可（也可自动导入本机其它客户端的登录态）。"
+                      />
+                    </Col>
+                  ) : type === 'chatgpt-oauth' ? (
+                    <Col xs={24}>
+                      <Alert
+                        type="info"
+                        showIcon
+                        message="保存后到详情页连接 ChatGPT"
+                        description="通过官方 OAuth 授权后，可使用 ChatGPT Plus / Pro / Business 套餐额度调用 Responses API。授权与模型目录需要登录后才能刷新。"
                       />
                     </Col>
                   ) : (

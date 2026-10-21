@@ -8,6 +8,7 @@ import { ChannelForm } from '../components/ChannelForm.tsx'
 import { PageActions, Spinner } from '../components/common.tsx'
 import { ProviderToggle } from '../components/ProviderToggle.tsx'
 import { WorkbuddyLoginPanel } from '../components/WorkbuddyLoginPanel.tsx'
+import { ChatgptLoginPanel } from '../components/ChatgptLoginPanel.tsx'
 import { providerEnabledPatch } from '../constants/providers.ts'
 import { useAsync } from '../hooks/useAsync.ts'
 import { navigate } from '../routes.ts'
@@ -64,6 +65,8 @@ export function ChannelDetailPage({ id, onBack, onDeleted }: {
   // 进入渠道详情后自动拉取一次完整模型目录，已手动刷新过的渠道不重复请求。
   useEffect(() => {
     if (provider === undefined) return
+    // ChatGPT 订阅渠道必须先完成 OAuth，模型目录在授权成功后再刷新。
+    if (provider.type === 'chatgpt-oauth') return
     if (autoRefreshed.current === provider.id) return
     autoRefreshed.current = provider.id
     void refresh()
@@ -151,6 +154,14 @@ export function ChannelDetailPage({ id, onBack, onDeleted }: {
           {provider.type === 'workbuddy' && (
             <Card className="page-card" title="WorkBuddy 登录">
               <WorkbuddyLoginPanel
+                providerId={provider.id}
+                onSignedIn={() => { void refresh(); reload() }}
+              />
+            </Card>
+          )}
+          {provider.type === 'chatgpt-oauth' && (
+            <Card className="page-card" title="ChatGPT 订阅授权">
+              <ChatgptLoginPanel
                 providerId={provider.id}
                 onSignedIn={() => { void refresh(); reload() }}
               />

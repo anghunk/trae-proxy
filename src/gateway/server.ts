@@ -325,7 +325,16 @@ function providerRecordFromBody(body: Record<string, unknown>, existing: Provide
   const id = typeof body['id'] === 'string' ? body['id'].trim().toLowerCase() : ''
   if (!isValidProviderId(id)) throw new Error('provider id 仅允许小写字母、数字和连字符（1-32 位）')
   const type = String(body['type'] ?? '')
-  const types: ProviderType[] = ['trae-cn', 'trae-ai', 'openai', 'anthropic', 'gemini', 'ollama', 'workbuddy']
+  const types: ProviderType[] = [
+    'trae-cn',
+    'trae-ai',
+    'openai',
+    'anthropic',
+    'gemini',
+    'ollama',
+    'workbuddy',
+    'chatgpt-oauth',
+  ]
   if (!types.includes(type as ProviderType)) throw new Error(`不支持的 provider 类型: ${type}`)
   const name = typeof body['name'] === 'string' ? body['name'].trim() : ''
   if (name === '') throw new Error('provider 名称不能为空')
@@ -578,6 +587,23 @@ export function createGatewayServer(options: GatewayServerOptions): GatewayServe
     const instance = createProvider(record, { logger: (message, detail) => logger.warn(message, detail) })
     if (record.enabled) registry.register(instance)
     return instance as unknown as import('./providers/workbuddy.ts').WorkbuddySessionApi
+  }
+
+  /**
+   * 取指定渠道的 ChatGPT 订阅登录态管理接口。
+   *
+   * 未启用渠道也会临时实例化，允许用户先完成 OAuth 再开启转发。
+   */
+  function chatgptSession(id: string): import('./providers/chatgpt-oauth.ts').ChatgptSessionApi | undefined {
+    const provider = registry.get(id)
+    if (provider !== undefined && typeof (provider as Partial<import('./providers/chatgpt-oauth.ts').ChatgptSessionApi>).startLogin === 'function') {
+      return provider as unknown as import('./providers/chatgpt-oauth.ts').ChatgptSessionApi
+    }
+    const record = store.getProvider(id)
+    if (record === undefined || record.type !== 'chatgpt-oauth') return undefined
+    const instance = createProvider(record, { logger: (message, detail) => logger.warn(message, detail) })
+    if (record.enabled) registry.register(instance)
+    return instance as unknown as import('./providers/chatgpt-oauth.ts').ChatgptSessionApi
   }
 
   function clientIp(req: IncomingMessage): string {
@@ -2012,6 +2038,65 @@ export function createGatewayServer(options: GatewayServerOptions): GatewayServe
       store.deleteProvider(id)
       await reloadProviders()
       writeJson(res, 200, { ok: true })
+      return
+    }
+    // ChatGPT 订阅渠道：官方 OAuth 使用套餐额度，凭据只落本地 0600 文件。
+    if (req.method === 'POST' && /^\/api\/providers\/[^/]+\/chatgpt-oauth\/login$/.test(path)) {
+      const id = decodeURIComponent(path.slice('/api/providers/'.length, -'/chatgpt-oauth/login'.length))
+      const session = chatgptSession(id)
+      if (session === undefined) {
+        writeError(res, 404, `渠道不存在或不是 ChatGPT 订阅类型: ${id}`, 'provider_not_found')
+        return
+      }
+      try {
+        writeJson(res, 200, { ok: true, ...(await session.startLogin()) })
+      } catch (error: unknown) {
+        writeError(res, 502, error instanceof Error ? error.message : String(error), 'login_failed')
+      }
+      return
+    }
+    if (req.method === 'GET' && /^\/api\/providers\/[^/]+\/chatgpt-oauth\/login$/.test(path)) {
+      const id = decodeURIComponent(path.slice('/api/providers/'.length, -'/chatgpt-oauth/login'.length))
+      const session = chatgptSession(id)
+      if (session === undefined) {
+        writeError(res, 404, `渠道不存在或不是 ChatGPT 订阅类型: ${id}`, 'provider_not_found')
+        return
+      }
+      try {
+        const result = session.pollLogin()
+        if (result.status === 'done') {
+          const record = store.getProvider(id)
+          if (record !== undefined && record.enabled) {
+            await reloadProviders()
+            await registry.refreshModels(id).catch(() => undefined)
+          }
+        }
+        writeJson(res, 200, { ok: result.status !== 'failed', ...result })
+      } catch (error: unknown) {
+        writeError(res, 502, error instanceof Error ? error.message : String(error), 'login_failed')
+      }
+      return
+    }
+    if (req.method === 'DELETE' && /^\/api\/providers\/[^/]+\/chatgpt-oauth\/login$/.test(path)) {
+      const id = decodeURIComponent(path.slice('/api/providers/'.length, -'/chatgpt-oauth/login'.length))
+      const session = chatgptSession(id)
+      if (session === undefined) {
+        writeError(res, 404, `渠道不存在或不是 ChatGPT 订阅类型: ${id}`, 'provider_not_found')
+        return
+      }
+      const result = await session.signOut()
+      await reloadProviders()
+      writeJson(res, 200, { ok: true, ...result })
+      return
+    }
+    if (req.method === 'GET' && /^\/api\/providers\/[^/]+\/chatgpt-oauth\/session$/.test(path)) {
+      const id = decodeURIComponent(path.slice('/api/providers/'.length, -'/chatgpt-oauth/session'.length))
+      const session = chatgptSession(id)
+      if (session === undefined) {
+        writeError(res, 404, `渠道不存在或不是 ChatGPT 订阅类型: ${id}`, 'provider_not_found')
+        return
+      }
+      writeJson(res, 200, { ok: true, ...(await session.sessionStatus()) })
       return
     }
     // WorkBuddy 渠道的登录态管理：走官方浏览器 OAuth，凭据只落本地文件。

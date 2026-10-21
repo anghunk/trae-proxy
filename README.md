@@ -60,6 +60,7 @@ curl http://127.0.0.1:39310/v1/chat/completions \
 - **控制台**：渠道状态、模型数、累计请求与 Token；
 - **渠道模型**：新增/编辑/启停/删除 provider，保存后热生效，Trae 类型无需 API Key；
 - **渠道状态**：定时主动探活每个渠道，按小时查看可用性与异常时段；
+- **ChatGPT 订阅**：通过官方 OAuth 使用 Plus / Pro / Business 套餐额度；
 - **API Keys**：创建/复制/吊销 key，可限制可访问 provider，支持一键唤起 CC Switch 官方导入；
 - **用量统计**：按今天 / 7 天 / 30 天 / 全部汇总，支持按 key 与模型统计；
 - **使用日志**：按日期、密钥、模型、状态筛选最近请求记录，支持分页与手动刷新。
@@ -76,6 +77,7 @@ curl http://127.0.0.1:39310/v1/chat/completions \
 | `gemini` | Google Gemini API |
 | `ollama` | 本地 Ollama，服务未运行时自动调用本机 CLI |
 | `workbuddy` | 复用 WorkBuddy 登录态，直连官方接口做流式转发 |
+| `chatgpt-oauth` | 官方 OAuth 使用 ChatGPT Plus / Pro / Business 套餐额度 |
 
 > 上游 API key 明文存于本地 SQLite；管理员密码与网关 API key 只存哈希。
 
@@ -135,6 +137,33 @@ access token 作为兜底（刻意不取一次性的 refresh token，避免把�
 
 可用 `settings.credentialPath` 覆盖登录态文件路径（默认 `config/workbuddy-<id>.json`），
 `settings.configDir` 覆盖桌面端配置目录（默认 `~/.workbuddy`）。
+
+### ChatGPT 订阅渠道
+
+`chatgpt-oauth` 使用 OpenAI 官方的 Sign in with ChatGPT 流程，不读取
+ChatGPT 网页 Cookie，也不访问 `backend-api`。用户在渠道详情页点击
+「继续使用 ChatGPT」完成浏览器授权后，网关会：
+
+```
+OpenAI /v1/chat/completions
+  → 网关转换为 Responses 请求
+    → https://api.openai.com/v1/responses（ChatGPT 套餐额度）
+      → Responses SSE 转回 OpenAI Chat Completions SSE
+```
+
+支持 ChatGPT Plus / Pro / Business 套餐额度，实际可用性取决于 OpenAI
+对账号、工作区、地区和策略的准入结果。Plus 的五小时额度由同一账号下的
+相关应用共享；Business 是否允许使用套餐额度由工作区和管理员策略决定。
+
+订阅路由要求每次 HTTP 推理发送 `store: false`、`stream: true`，并完整携带
+上下文。`temperature`、`top_p`、`max_output_tokens` 等字段会被网关适配层
+省略。模型列表来自账号授权后的官方模型目录。
+
+OAuth access token 有效期约 1 小时，refresh token 有效期约 30 天并会轮换。
+凭据保存在 `config/chatgpt-oauth-<id>.json`，权限 `0600`；退出登录时会尝试
+调用官方 revocation endpoint，并始终清除本地 token。
+
+可通过 `settings.credentialPath` 覆盖凭据文件路径。
 
 ## 安全
 

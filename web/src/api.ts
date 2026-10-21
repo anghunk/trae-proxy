@@ -9,7 +9,7 @@ export interface AdminSession {
 
 export interface Provider {
   id: string
-  type: 'trae-cn' | 'trae-ai' | 'openai' | 'anthropic' | 'gemini' | 'ollama' | 'workbuddy'
+  type: 'trae-cn' | 'trae-ai' | 'openai' | 'anthropic' | 'gemini' | 'ollama' | 'workbuddy' | 'chatgpt-oauth'
   name: string
   enabled: boolean
   baseUrl?: string
@@ -126,6 +126,35 @@ export interface WorkbuddyLoginPoll {
   status: 'pending' | 'done' | 'failed'
   accountId?: string
   error?: string
+}
+
+/** ChatGPT 订阅渠道的登录态摘要。 */
+export interface ChatgptSession {
+  signedIn: boolean
+  accountId?: string
+  email?: string
+  expiresAt?: number
+  refreshable: boolean
+  expired: boolean
+  planUsage: boolean
+}
+
+/** ChatGPT 订阅渠道的浏览器授权结果。 */
+export interface ChatgptLoginStart {
+  ok: boolean
+  url: string
+}
+
+export interface ChatgptLoginPoll {
+  ok: boolean
+  status: 'pending' | 'done' | 'failed'
+  accountId?: string
+  error?: string
+}
+
+export interface ChatgptSignOutResult {
+  ok: boolean
+  remoteRevoked: boolean
 }
 
 /** 单个渠道在某一小时内的健康度分档。 */
@@ -272,6 +301,14 @@ export const api = {
     request<WorkbuddyLoginPoll>(`/api/providers/${encodeURIComponent(id)}/workbuddy/login`),
   workbuddySignOut: (id: string) =>
     request<{ ok: boolean }>(`/api/providers/${encodeURIComponent(id)}/workbuddy/login`, { method: 'DELETE' }),
+  chatgptSession: (id: string) =>
+    request<ChatgptSession>(`/api/providers/${encodeURIComponent(id)}/chatgpt-oauth/session`),
+  chatgptStartLogin: (id: string) =>
+    request<ChatgptLoginStart>(`/api/providers/${encodeURIComponent(id)}/chatgpt-oauth/login`, { method: 'POST' }),
+  chatgptPollLogin: (id: string) =>
+    request<ChatgptLoginPoll>(`/api/providers/${encodeURIComponent(id)}/chatgpt-oauth/login`),
+  chatgptSignOut: (id: string) =>
+    request<ChatgptSignOutResult>(`/api/providers/${encodeURIComponent(id)}/chatgpt-oauth/login`, { method: 'DELETE' }),
   apiKeys: () => request<{ data: ApiKey[] }>('/api/api-keys'),
   createApiKey: (name: string, modelPrefixes: string[], modelIds: string[]) =>
     request<{ ok: boolean; key: ApiKey & { key: string } }>('/api/api-keys', {

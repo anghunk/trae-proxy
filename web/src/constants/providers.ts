@@ -10,6 +10,7 @@ export const TYPE_LABEL: Record<Provider['type'], string> = {
   gemini: 'Gemini',
   ollama: 'Ollama',
   workbuddy: 'WorkBuddy',
+  'chatgpt-oauth': 'ChatGPT 订阅',
 }
 
 export const TYPE_HINT: Record<Provider['type'], string> = {
@@ -20,6 +21,7 @@ export const TYPE_HINT: Record<Provider['type'], string> = {
   gemini: 'Google Gemini API',
   ollama: '本地 Ollama（未运行时自动调用 CLI）',
   workbuddy: '复用 WorkBuddy 登录态，直连官方接口做流式转发',
+  'chatgpt-oauth': '通过官方 OAuth 使用 ChatGPT Plus / Pro / Business 订阅额度',
 }
 
 export const TYPE_DEFAULT: Record<Provider['type'], { baseUrl: string; needsKey: boolean; models: string[] }> = {
@@ -30,6 +32,7 @@ export const TYPE_DEFAULT: Record<Provider['type'], { baseUrl: string; needsKey:
   gemini: { baseUrl: 'https://generativelanguage.googleapis.com', needsKey: true, models: ['gemini-1.5-flash'] },
   ollama: { baseUrl: 'http://127.0.0.1:11434/v1', needsKey: false, models: ['llama3.1'] },
   workbuddy: { baseUrl: '', needsKey: false, models: [] },
+  'chatgpt-oauth': { baseUrl: '', needsKey: false, models: [] },
 }
 
 export interface OfficialPreset {
@@ -52,6 +55,7 @@ export const OFFICIAL_PRESETS: OfficialPreset[] = [
   { id: 'gemini', name: 'Google Gemini', type: 'gemini', baseUrl: 'https://generativelanguage.googleapis.com', needsKey: true, hint: 'Gemini 系列' },
   { id: 'ollama', name: '本地 Ollama', type: 'ollama', baseUrl: 'http://127.0.0.1:11434/v1', needsKey: false, hint: '自动调用本机 CLI' },
   { id: 'workbuddy', name: '本机 WorkBuddy', type: 'workbuddy', baseUrl: '', needsKey: false, hint: '复用 WorkBuddy 登录态，无需 API Key' },
+  { id: 'chatgpt-oauth', name: 'ChatGPT 订阅', type: 'chatgpt-oauth', baseUrl: '', needsKey: false, hint: 'Plus / Pro / Business 套餐额度' },
 ]
 
 /**

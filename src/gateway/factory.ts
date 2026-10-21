@@ -13,6 +13,7 @@ import { WorkbuddyProvider } from './providers/workbuddy.ts'
 import { AnthropicProvider } from './providers/anthropic.ts'
 import { GeminiProvider } from './providers/gemini.ts'
 import { TraeGatewayProvider } from './providers/trae.ts'
+import { ChatgptOAuthProvider } from './providers/chatgpt-oauth.ts'
 
 export interface ProviderFactoryOptions {
   logger?: (message: string, detail?: unknown) => void
@@ -42,6 +43,8 @@ export function createProvider(
       return new OllamaProvider({ record, logger: options.logger })
     case 'workbuddy':
       return new WorkbuddyProvider({ record, logger: options.logger })
+    case 'chatgpt-oauth':
+      return new ChatgptOAuthProvider({ record, logger: options.logger })
     case 'anthropic':
       return new AnthropicProvider({ record, logger: options.logger })
     case 'gemini':
@@ -75,6 +78,7 @@ export function providerTypeLabel(type: ProviderType): string {
     gemini: 'Gemini',
     ollama: 'Ollama',
     workbuddy: 'WorkBuddy',
+    'chatgpt-oauth': 'ChatGPT 订阅',
   }
   return labels[type]
 }
